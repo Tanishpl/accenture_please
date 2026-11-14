@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QueueSkip GP</title>
+<style>
+  :root { --ink:#1d2433; --muted:#5b6475; --line:#d9dee7; --bg:#f6f8fb; --card:#fff; --accent:#005eb8; --ok:#007f3b; --bad:#d5281b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
+  main { max-width: 640px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  p.lede { color: var(--muted); margin: 0 0 24px; }
+  form, .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; }
+  fieldset { border:0; padding:0; margin:0 0 20px; }
+  legend { font-weight:600; margin-bottom:8px; }
+  label { display:block; font-size:.9rem; margin:12px 0 4px; }
+  label small { color:var(--muted); font-weight:normal; }
+  input, textarea { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font:inherit; }
+  textarea { min-height: 72px; resize: vertical; }
+  .row { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  @media (max-width: 520px) { .row { grid-template-columns: 1fr; } }
+  .check { display:flex; gap:10px; align-items:flex-start; margin-top:12px; font-size:.95rem; }
+  .check input { width:auto; margin-top:4px; }
+  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:12px 18px; font:inherit; font-weight:600; cursor:pointer; }
+  button.secondary { background:#fff; color:var(--accent); border:1px solid var(--accent); }
+  .warn { background:#fff4e5; border-left:4px solid #ffb81c; padding:10px 12px; border-radius:6px; font-size:.9rem; margin-bottom:20px; }
+  .error { color:var(--bad); margin-top:12px; white-space:pre-line; }
+  .status { font-size:1.25rem; font-weight:700; }
+  .status.booked { color:var(--ok); } .status.failed { color:var(--bad); }
+  .meta { color:var(--muted); margin:4px 0 16px; }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
+  ol.log { list-style:none; padding:0; margin:0; font-size:.9rem; max-height:360px; overflow:auto; border-top:1px solid var(--line); }
+  ol.log li { padding:6px 0; border-bottom:1px solid var(--line); }
+  ol.log b { display:inline-block; min-width:110px; color:var(--muted); font-weight:500; }
+  .booking { background:#e6f4ea; border-radius:8px; padding:12px; margin-bottom:16px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>QueueSkip GP</h1>
+  <p class="lede">Give us your details once. We wait in your surgery's phone queue and ask the receptionist to book you in, then text you the appointment.</p>
+
+  <div class="warn">Not for emergencies. If it's urgent, call <strong>999</strong> or <strong>111</strong>.</div>
+
+  <form id="intake" novalidate>
+    <fieldset>
+      <legend>Your details</legend>
+      <label>Full name <input name="full_name" required autocomplete="name"></label>
+      <div class="row">
+        <label>Date of birth <input name="date_of_birth" required placeholder="14 March 1990"></label>
+        <label>NHS number <small>(optional)</small> <input name="nhs_number" inputmode="numeric" placeholder="485 777 3456"></label>
+      </div>
+      <label>Address <input name="address" required autocomplete="street-address"></label>
+      <label>Your mobile <small>(for the confirmation text)</small> <input name="patient_phone" required type="tel" autocomplete="tel" placeholder="07700 900123"></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>The appointment</legend>
+      <label>What is it for? <small>(the receptionist may ask)</small> <textarea name="reason" required placeholder="Persistent cough for three weeks"></textarea></label>
+      <label>When can you make it? <textarea name="availability" required placeholder="Weekday mornings, or any time Friday"></textarea></label>
+      <label>Preferred GP <small>(optional)</small> <input name="preferred_clinician" placeholder="Dr Patel"></label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Your surgery</legend>
+      <div class="row">
+        <label>Surgery name <input name="surgery_name" required placeholder="Riverside Medical Centre"></label>
+        <label>Surgery phone <input name="surgery_phone" required type="tel" placeholder="0191 496 0000"></label>
+      </div>
+    </fieldset>
+
+    <label class="check"><input type="checkbox" name="allow_patient_callback" checked> If the receptionist needs to talk to me, ring me and connect me to the call.</label>
+    <label class="check"><input type="checkbox" name="consent" required> I agree to an automated assistant sharing these details with my GP surgery on my behalf.</label>
+
+    <p><button type="submit">Join the queue for me</button></p>
+    <div class="error" id="error" role="alert"></div>
+  </form>
+
+  <section class="card" id="tracker" hidden>
+    <div class="status" id="status">Dialling…</div>
+    <div class="meta" id="meta"></div>
+    <div class="booking" id="booking" hidden></div>
+    <div class="controls" id="controls">
+      <button class="secondary" data-action="takeover">Receptionist answered</button>
+      <button class="secondary" data-action="digits">Press a key…</button>
+      <button class="secondary" data-action="cancel">Cancel call</button>
+    </div>
+    <ol class="log" id="log"></ol>
+  </section>
+</main>
+
+<script>
+const form = document.getElementById('intake');
+const errorBox = document.getElementById('error');
+let callId = null, timer = null;
+
+const LABELS = {
+  dialling: 'Dialling the surgery…', on_hold: 'Waiting in the queue', talking_to_receptionist: 'Talking to the receptionist',
+  handed_to_patient: 'Connected you to the receptionist', booked: 'Appointment booked', failed: 'Could not book', ended: 'Call ended',
+};
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  errorBox.textContent = '';
+  const data = Object.fromEntries(new FormData(form));
+  data.allow_patient_callback = form.allow_patient_callback.checked;
+  data.consent = form.consent.checked;
+  const res = await fetch('/api/calls', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const body = await res.json();
+  if (!res.ok) {
+    errorBox.textContent = Array.isArray(body.detail)
+      ? body.detail.map(d => `${d.loc.at(-1)}: ${d.msg.replace('Value error, ', '')}`).join('\n')
+      : body.detail;
+    return;
+  }
+  callId = body.id;
+  form.hidden = true;
+  document.getElementById('tracker').hidden = false;
+  poll();
+  timer = setInterval(poll, 2000);
+});
+
+async function poll() {
+  const res = await fetch(`/api/calls/${callId}`);
+  if (!res.ok) return;
+  const s = await res.json();
+  const status = document.getElementById('status');
+  status.textContent = LABELS[s.status] || s.status;
+  status.className = 'status ' + (s.status === 'booked' ? 'booked' : s.status === 'failed' ? 'failed' : '');
+  const mins = Math.floor(s.waited_seconds / 60), secs = s.waited_seconds % 60;
+  document.getElementById('meta').textContent = `${s.surgery} · waited ${mins}m ${secs}s${s.outcome ? ' · ' + s.outcome : ''}`;
+  const booking = document.getElementById('booking');
+  if (s.booking) {
+    booking.hidden = false;
+    booking.textContent = `${s.booking.date} at ${s.booking.time}` + (s.booking.clinician ? ` with ${s.booking.clinician}` : '') + (s.booking.location ? ` · ${s.booking.location}` : '') + (s.booking.notes ? ` · ${s.booking.notes}` : '');
+  }
+  const log = document.getElementById('log');
+  log.replaceChildren(...s.events.slice().reverse().map(ev => {
+    const li = document.createElement('li');
+    const b = document.createElement('b'); b.textContent = `${ev.t}s ${ev.kind}`;
+    li.append(b, ' ', ev.text);
+    return li;
+  }));
+  const done = ['booked', 'failed', 'ended', 'handed_to_patient'].includes(s.status);
+  document.getElementById('controls').hidden = done;
+  if (done && timer) { clearInterval(timer); timer = null; }
+}
+
+document.getElementById('controls').addEventListener('click', async (e) => {
+  const action = e.target.dataset.action;
+  if (!action) return;
+  if (action === 'digits') {
+    const btn = e.target;
+    const input = document.createElement('input');
+    input.placeholder = 'e.g. 1'; input.style.width = '80px';
+    btn.replaceWith(input); input.focus();
+    input.addEventListener('keydown', async (k) => {
+      if (k.key !== 'Enter') return;
+      if (input.value) await fetch(`/api/calls/${callId}/digits/${encodeURIComponent(input.value)}`, { method: 'POST' });
+      input.replaceWith(btn);
+    });
+    return;
+  }
+  await fetch(`/api/calls/${callId}/${action}`, { method: 'POST' });
+  poll();
+});
+</script>
+</body>
+</html>

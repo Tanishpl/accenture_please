@@ -52,14 +52,105 @@ const ARROW = () => {
   return svg;
 };
 
+/* ================= local voice ================= */
+
+// Speech out uses only voices installed on this device (localService),
+// never the browser's network voices. Speech in goes to local Whisper on
+// the server, never to the browser's own recogniser (Chrome's uses Google).
+const localVoice = {
+  pick() {
+    if (!("speechSynthesis" in window)) return null;
+    const voices = speechSynthesis.getVoices().filter((v) => v.localService && /^en/i.test(v.lang));
+    return voices.find((v) => /en-GB/i.test(v.lang)) || voices[0] || null;
+  },
+  available() { return !!this.pick(); },
+  say(text) {
+    return new Promise((resolve) => {
+      const v = this.pick();
+      if (!v || !text) return resolve();
+      let settled = false;
+      // Chrome sometimes never fires onend, so never wait longer than the speech should take.
+      const words = text.split(/\s+/).length;
+      const guard = setTimeout(() => done(), (words / 2.2) * 1000 + 2500);
+      function done() { if (!settled) { settled = true; clearTimeout(guard); resolve(); } }
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      u.voice = v;
+      u.lang = v.lang;
+      u.rate = 0.9;
+      u.onend = done;
+      u.onerror = done;
+      speechSynthesis.speak(u);
+    });
+  },
+  stop() { if ("speechSynthesis" in window) speechSynthesis.cancel(); },
+};
+if ("speechSynthesis" in window) speechSynthesis.getVoices();
+
+/* Records until she stops talking. Resolves with a Blob, or null if nothing was said. */
+function listen({ maxMs = 30000, silenceMs = 1800, waitMs = 9000, onLevel = () => {} } = {}) {
+  let stopNow = () => {};
+  const promise = (async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    const ctx = new AudioContext();
+    // Started after the question is read out, not from a click, so it may begin suspended.
+    await ctx.resume();
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(analyser);
+    const buf = new Float32Array(analyser.fftSize);
+    const recorder = new MediaRecorder(stream);
+    const chunks = [];
+    recorder.ondataavailable = (e) => chunks.push(e.data);
+
+    let spoke = false;
+    let lastSound = performance.now();
+    const started = performance.now();
+    const finished = new Promise((ok) => { recorder.onstop = ok; });
+    const stop = () => { if (recorder.state === "recording") recorder.stop(); };
+    stopNow = stop;
+    recorder.start();
+
+    const timer = setInterval(() => {
+      analyser.getFloatTimeDomainData(buf);
+      const rms = Math.sqrt(buf.reduce((s, x) => s + x * x, 0) / buf.length);
+      onLevel(Math.min(1, rms * 12));
+      const now = performance.now();
+      if (rms > 0.02) { spoke = true; lastSound = now; }
+      if ((spoke && now - lastSound > silenceMs) || (!spoke && now - started > waitMs) || now - started > maxMs) stop();
+    }, 100);
+
+    await finished;
+    clearInterval(timer);
+    stream.getTracks().forEach((t) => t.stop());
+    ctx.close();
+    onLevel(0);
+    return spoke ? new Blob(chunks, { type: recorder.mimeType || "audio/webm" }) : null;
+  })();
+  return { promise, stop: () => stopNow() };
+}
+
+const MIC_ICON = () => {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  p.setAttribute("d", "M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z");
+  p.setAttribute("fill", "currentColor");
+  svg.append(p);
+  return svg;
+};
+
 /* ================= patient service ================= */
 
 function initPatient() {
-  const state = { sid: null, status: {}, record: null, rows: [], credential: null, practice: null, reasonEdit: null };
+  const state = { sid: null, status: {}, record: null, rows: [], credential: null, practice: null, reasonEdit: null, voice: false, cleanup: null };
 
-  api("/api/status").then((s) => { state.status = s; }).catch(() => {});
+  const statusReady = api("/api/status").then((s) => { state.status = s; }).catch(() => {});
 
   function render(...nodes) {
+    if (state.cleanup) { state.cleanup(); state.cleanup = null; }
+    localVoice.stop();
     const view = $("view");
     view.replaceChildren(...nodes.filter(Boolean));
     window.scrollTo(0, 0);
@@ -93,11 +184,26 @@ function initPatient() {
       h("h2", "Your information"),
       h("p", "Your answers and your voice are processed on this device. The surgery is only told that a registered patient would like an appointment, roughly what it's about, and when suits you."),
       h("p", "The assistant never gives your date of birth, address or NHS number. If the surgery needs those, they'll ask to speak to you."),
-      h("button.button.start", { type: "button", onclick: start }, "Start now", ARROW()),
+      h("div.button-group",
+        h("button.button.start", { type: "button", onclick: () => start(false) }, "Start now", ARROW()),
+        h("button.button.secondary.with-icon", { type: "button", onclick: () => start(true) }, MIC_ICON(), "Speak your answers instead")),
+      h("p.hint", "If typing is hard, you can talk instead. We'll read each question out and listen to your answer. Your voice is processed on this device and is not recorded or sent anywhere."),
     );
   }
 
-  async function start() {
+  async function start(voice) {
+    await statusReady;
+    if (voice && !state.status.stt) {
+      render(
+        backLink(startView),
+        h("h1", "Speaking is not set up on this device"),
+        h("p", "Answering by voice needs the speech model installed on this device, so your voice never has to leave it."),
+        h("p", "Ask whoever set this up to run: ", h("code", "pip install faster-whisper")),
+        h("button.button", { type: "button", onclick: () => start(false) }, "Continue by typing instead"),
+      );
+      return;
+    }
+    state.voice = voice;
     const r = await api("/api/session", { method: "POST" });
     state.sid = r.session_id;
     handle(r);
@@ -172,7 +278,7 @@ function initPatient() {
       });
 
       body = h("fieldset.fieldset", { "aria-describedby": [q.hint ? `${id}-hint` : "", `${id}-error`].filter(Boolean).join(" ") },
-        h("legend.fieldset-legend", h("h1", q.text)),
+        h("legend.fieldset-legend", state.voice ? h("span.visually-hidden", q.text) : h("h1", q.text)),
         q.hint ? h("div.hint", { id: `${id}-hint` }, q.hint) : null,
         errorSlot,
         items);
@@ -194,8 +300,8 @@ function initPatient() {
       const ta = h("textarea.textarea", { id, name: id, rows: 5, "aria-describedby": `${id}-hint ${id}-error` });
       ta.value = q.value || "";
       body = h("div.form-group",
-        h("h1", h("label", { for: id }, q.text)),
-        q.hint ? h("div.hint", { id: `${id}-hint` }, q.hint) : null,
+        state.voice ? h("label.label", { for: id }, "Type it instead") : h("h1", h("label", { for: id }, q.text)),
+        q.hint && !state.voice ? h("div.hint", { id: `${id}-hint` }, q.hint) : null,
         errorSlot,
         ta);
       read = () => (ta.value.trim() ? { text: ta.value.trim() } : { error: "Tell us what you'd like to see a doctor about", focus: ta });
@@ -226,39 +332,100 @@ function initPatient() {
     const submitBtn = h("button.button", { type: "submit" }, "Continue");
     form.append(submitBtn);
 
-    if (state.status.stt && !q.options.length) form.append(voiceButton());
+    const back = q.can_go_back
+      ? backLink(async () => handle(await api(`/api/session/${state.sid}/back`, { method: "POST" })))
+      : backLink(startView);
+    const caption = h("span.caption", `Question ${q.progress.number} of ${q.progress.total}`);
+    const spokenAck = q.ack;
+    const heard = q.heard
+      ? insetText(h("p", "We heard: “", q.heard, "”"),
+          q.understood ? h("p", "We've put that down as: ", h("strong", q.understood), ". You can change it at the end.") : null,
+          q.ack ? h("p", q.ack) : null)
+      : null;
+    if (heard) q = { ...q, ack: "" };
 
+    if (!state.voice) {
+      render(back, caption, errorSummary, q.ack ? insetText(h("p", q.ack)) : null, form);
+      return;
+    }
+
+    // Voice mode: read the question out, then listen.
+    const isOpen = !q.options.length;
+    const spokenPrompt = isOpen
+      ? "Tell us what's wrong, in your own words. If you can, say how long it's been going on and when you could come in. Take your time."
+      : q.text + (q.options.length ? ` You could say: ${q.options.slice(0, 3).join(", or ")}.` : "");
+    const voicePanel = buildVoicePanel(q, isOpen);
     render(
-      q.can_go_back ? backLink(async () => handle(await api(`/api/session/${state.sid}/back`, { method: "POST" }))) : backLink(startView),
-      h("span.caption", `Question ${q.progress.number} of ${q.progress.total}`),
-      errorSummary,
+      back,
+      caption,
+      heard,
       q.ack ? insetText(h("p", q.ack)) : null,
-      form,
+      h("h1", q.text),
+      isOpen ? h("p.lead", "Say it in your own words. You can also tell us how long it's been going on and when you could come in.") : null,
+      voicePanel.node,
+      h("details.details",
+        h("summary", h("span", isOpen ? "I'd rather type" : "I'd rather choose an answer")),
+        h("div.details-text", errorSummary, form)),
     );
+    state.cleanup = voicePanel.cleanup;
+    (async () => {
+      await localVoice.say([spokenAck, spokenPrompt].filter(Boolean).join(" "));
+      if (voicePanel.alive()) voicePanel.begin();
+    })();
   }
 
-  function voiceButton() {
-    let recorder = null;
-    const btn = h("button.button.secondary", { type: "button", onclick: async () => {
-      if (recorder && recorder.state === "recording") { recorder.stop(); return; }
-      let stream;
-      try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-      catch { alert("We couldn't use your microphone. You can type your answer instead."); return; }
-      const chunks = [];
-      recorder = new MediaRecorder(stream);
-      recorder.ondataavailable = (e) => chunks.push(e.data);
-      recorder.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        btn.textContent = "Processing on this device…";
+  function buildVoicePanel(q, isOpen) {
+    let alive = true;
+    let session = null;
+    const level = h("div.level-bar");
+    const status = h("p.voice-status", { "aria-live": "polite" }, "Reading the question…");
+    const btn = h("button.mic-button", { type: "button", "aria-label": "Start speaking" }, MIC_ICON());
+    const again = h("a", { href: "#", onclick: (e) => { e.preventDefault(); session?.stop(); localVoice.say(q.text); } }, "Hear the question again");
+
+    async function begin() {
+      if (!alive) return;
+      localVoice.stop();
+      btn.classList.add("listening");
+      btn.setAttribute("aria-label", "Stop, I've finished");
+      status.textContent = isOpen ? "Listening. Take your time. We'll stop when you go quiet." : "Listening…";
+      try {
+        session = listen({ maxMs: isOpen ? 90000 : 20000, silenceMs: isOpen ? 2500 : 1600, onLevel: (v) => { level.style.width = `${v * 100}%`; } });
+        const blob = await session.promise;
+        session = null;
+        btn.classList.remove("listening");
+        if (!alive) return;
+        if (!blob) { idle("We didn't hear anything. Tap the microphone and try again."); return; }
+        status.textContent = "Working out your answer on this device…";
+        btn.disabled = true;
         const form = new FormData();
-        form.append("file", new Blob(chunks, { type: "audio/webm" }), "answer.webm");
-        try { handle(await api(`/api/session/${state.sid}/audio`, { method: "POST", body: form })); }
-        catch (err) { alert(err.message); btn.textContent = "Speak your answer instead"; }
-      };
-      recorder.start();
-      btn.textContent = "Stop recording";
-    } }, "Speak your answer instead");
-    return btn;
+        form.append("file", blob, "answer.webm");
+        const r = await api(`/api/session/${state.sid}/audio`, { method: "POST", body: form });
+        if (alive) handle(r);
+      } catch (err) {
+        btn.classList.remove("listening");
+        btn.disabled = false;
+        if (!alive) return;
+        const msg = /Permission|NotAllowed/i.test(err.name + err.message)
+          ? "We can't use the microphone. Check your browser allows it, or choose an answer below."
+          : err.message;
+        idle(msg);
+        localVoice.say(msg);
+      }
+    }
+
+    function idle(msg) {
+      status.textContent = msg;
+      btn.setAttribute("aria-label", "Start speaking");
+    }
+
+    btn.addEventListener("click", () => (session ? session.stop() : begin()));
+
+    return {
+      node: h("div.voice-panel", btn, h("div.voice-text", status, h("div.level", level), h("p.voice-again", again))),
+      begin,
+      alive: () => alive,
+      cleanup: () => { alive = false; session?.stop(); },
+    };
   }
 
   /* ---------- check your answers ---------- */
@@ -291,9 +458,18 @@ function initPatient() {
           details.open = false;
         } }, "Update")));
 
+    const readAloud = localVoice.available()
+      ? h("button.button.secondary.with-icon", { type: "button", onclick: () => {
+          const lines = state.rows.map((r) => `${r.label}: ${r.value}.`);
+          localVoice.say(["Here are your answers.", ...lines, "The surgery will be told:", summary.textContent,
+            "If that's all right, press Confirm and book."].join(" "));
+        } }, MIC_ICON(), "Read my answers out loud")
+      : null;
+
     render(
       backLink(async () => handle(await api(`/api/session/${state.sid}/back`, { method: "POST" }))),
       h("h1", "Check your answers"),
+      readAloud,
       list,
       h("h2", "What the surgery will be told"),
       h("p", "This is the only thing the assistant will say about you on the phone. Your answers above stay on this device."),

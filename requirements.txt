@@ -3,8 +3,10 @@ uvicorn>=0.29
 python-multipart>=0.0.9
 requests>=2.31
 
-# Optional, local-only voice. The app runs text-only without these.
-# faster-whisper>=1.0
+# Local speech-to-text for "Speak your answers instead". The app runs typed-only without it.
+faster-whisper>=1.0
+
+# Optional: Kokoro voice for the call side. Questions are read with the device's own voices.
 # kokoro>=0.9
 # soundfile>=0.12
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -13,12 +14,13 @@ from typing import Optional
 
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import delegation, speech
 from app.call import CallRefused, run_call
-from app.interview import InterviewSession, _split_list, build_spoken_summary, ollama_available
+from app.interview import InterviewSession, _split_list, build_spoken_summary, ollama_available, ollama_model
 from app.record import Preferences, Record, append_audit, get_audit, init_db, save_record
 from mock.receptionist import PRACTICE_NUMBER
 
@@ -27,6 +29,12 @@ STATIC = Path(__file__).resolve().parent.parent / "static"
 app = FastAPI(title="GP booking agent (local-first)")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 init_db()
+
+
+@app.on_event("startup")
+def _warm_up_speech() -> None:
+    if speech.STT_AVAILABLE:
+        threading.Thread(target=speech.load_whisper, daemon=True).start()
 
 
 @dataclass
@@ -73,7 +81,13 @@ def panels():
 
 @app.get("/api/status")
 def status():
-    return {"stt": speech.STT_AVAILABLE, "tts": speech.TTS_AVAILABLE, "ollama": ollama_available()}
+    return {
+        "stt": speech.STT_AVAILABLE,
+        "stt_model": speech.WHISPER_MODEL if speech.STT_AVAILABLE else None,
+        "tts": speech.TTS_AVAILABLE,
+        "ollama": ollama_available(),
+        "llm_model": ollama_model(),
+    }
 
 
 @app.post("/api/session")
@@ -85,8 +99,8 @@ def new_session():
     return {"session_id": sid, **s.interview.start()}
 
 
-def _handle_answer(sid: str, s: Session, text: str) -> dict:
-    result = s.interview.submit_answer(text)
+def _handle_answer(sid: str, s: Session, text: str, spoken: bool = False) -> dict:
+    result = s.interview.submit_answer(text, spoken=spoken)
     if result["type"] == "crisis" and result["kind"] == "red_flag":
         # Labels only. Never the content, never a severity.
         append_audit(f"session-{sid}", "system", said="Red flag detected; booking stopped",
@@ -143,10 +157,14 @@ async def audio(sid: str, file: UploadFile = File(...)):
         tmp.write(data)
         path = tmp.name
     try:
-        text = speech.transcribe(path)
+        text = await run_in_threadpool(speech.transcribe, path)
     finally:
         Path(path).unlink(missing_ok=True)
-    return {"transcript": text, **_handle_answer(sid, s, text)}
+    if not text:
+        raise HTTPException(422, "We didn't hear anything. Please try again, a little closer to the microphone.")
+    if s.interview.finished:
+        raise HTTPException(409, "Interview already finished")
+    return {"transcript": text, **_handle_answer(sid, s, text, spoken=True)}
 
 
 _EDITABLE_CLINICAL = {"description", "duration", "trajectory", "taking_anything"}
@@ -260,7 +278,7 @@ def boundary(sid: Optional[str] = None, mode: str = "local"):
     patient_turns = [t["text"] for t in iv.transcript if t["role"] == "patient"]
 
     stays = [
-        {"label": "Her audio", "value": f"{s.audio_bytes:,} bytes recorded" if s.audio_bytes else "None (typed input)"},
+        {"label": "Her audio", "value": f"{s.audio_bytes:,} bytes, transcribed here then deleted" if s.audio_bytes else "None (typed input)"},
         {"label": "Full transcript", "value": iv.transcript},
         {"label": "Clinical detail", "value": record["clinical_detail"] if record else {k: v for k, v in iv.answers.items()}},
         {"label": "Structured record", "value": record or "Building..."},

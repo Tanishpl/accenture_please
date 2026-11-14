@@ -6,6 +6,7 @@ plain heuristics when it is not. Nothing here ever calls a cloud API.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Optional
@@ -23,7 +24,12 @@ from app.safety import (
 )
 
 OLLAMA_BASE = "http://localhost:11434"
-OLLAMA_MODEL = "qwen2.5:3b-instruct"
+# First one that is installed wins, so weaker devices can pull a smaller model.
+OLLAMA_MODELS = [m for m in [
+    os.environ.get("GP_AGENT_LLM", ""),
+    "qwen2.5:3b-instruct", "qwen2.5:3b", "llama3.2:3b",
+    "qwen2.5:1.5b-instruct", "qwen2.5:1.5b", "llama3.2:1b", "qwen2.5:0.5b-instruct",
+] if m]
 
 # Number held on this device from setup. Never spoken on the call.
 PATIENT_NUMBER = "07700 900 123"
@@ -90,9 +96,52 @@ QUESTION_BY_KEY = {q.key: q for q in QUESTIONS}
 _SKIP_LABELS = {
     "duration": "how long it's been going on",
     "trajectory": "whether it's changing",
+    "seen_before": "whether you've been seen before",
     "taking_anything": "what you're taking",
+    "urgency": "how soon you need to be seen",
     "appointment_type": "how you'd like to be seen",
+    "times": "which times suit you",
+    "preferred_clinician": "who you'd like to see",
+    "access_needs": "what would help at your appointment",
 }
+
+# How spoken answers map onto the options. First match wins for single-choice questions.
+_SPOKEN: dict[str, list[tuple[str, str]]] = {
+    "trajectory": [("Getting worse", r"worse"), ("Getting better", r"better|improv"),
+                   ("Staying the same", r"same|no change|not changed|steady")],
+    "seen_before": [("Yes, longer ago", r"months|years?\b|long time|ages|while ago"),
+                    ("Yes, in the last few weeks", r"recent|weeks?|days? ago|yesterday"),
+                    ("No, this is new", r"^\W*(no|nope|never|not yet)\b|first time|\bnew\b")],
+    "taking_anything": [("Paracetamol", r"paracetamol|calpol"), ("Ibuprofen", r"ibuprofen|nurofen"),
+                        ("No", r"^\W*(no|nothing|none|not taking)\b")],
+    "urgency": [("Today if possible", r"today|urgent|asap|as soon as|straight away"),
+                ("This week", r"this week|few days|next week|week is fine"),
+                ("In the next 2 weeks", r"no rush|not urgent|couple of weeks|two weeks|whenever")],
+    "appointment_type": [("Either is fine", r"either|don'?t mind|whichever|\bboth\b|doesn'?t matter"),
+                         ("Phone call", r"phone|call me|ring me|\bcall\b"),
+                         ("Come in to the surgery", r"come in|in person|face to face|see (them|someone|a doctor)|visit")],
+    "times": [("Weekday mornings", r"morning"), ("Weekday afternoons", r"afternoon"),
+              ("After 5pm", r"evening|after (5|five|work)|late"), ("Any time", r"any ?time|whenever|don'?t mind|any day")],
+    "preferred_clinician": [("No preference", r"^\W*(no|nope|don'?t mind|anyone|any)\b|no preference|doesn'?t matter")],
+    "access_needs": [("Speak slowly and clearly", r"slow|hearing|deaf|clear"), ("An interpreter", r"interpret|translat"),
+                     ("Step-free access", r"wheelchair|\bsteps?\b|stairs|ramp|walking|frame"),
+                     ("Nothing needed", r"^\W*(no|nothing|none|i'?m fine)\b|nothing needed")],
+    "contact_number": [("Yes", r"^\W*(yes|yeah|yep|correct|that'?s (right|fine|correct|it))")],
+}
+
+
+def match_spoken(q: Question, text: str) -> Optional[str]:
+    """Map a spoken answer onto the question's options, or None to keep it as said."""
+    if q.key == "contact_number" and len(re.sub(r"\D", "", text)) >= 10:
+        return None
+    hits = [label for label, pattern in _SPOKEN.get(q.key, []) if re.search(pattern, text, re.I)]
+    if not hits:
+        return None
+    if not q.multi:
+        return hits[0]
+    exclusive = {"Nothing needed", "Any time"}
+    real = [h for h in hits if h not in exclusive]
+    return ", ".join(real) if real else hits[0]
 
 
 def normalise(q: Question, text: str) -> str:
@@ -112,8 +161,9 @@ You do not suggest what the problem might be.
 
 From the patient's message below, extract ONLY facts she states explicitly.
 Return JSON with these keys, using null for anything not stated:
-duration, trajectory (better|worse|same), taking_anything, urgency,
-appointment_type (face to face|phone), times, reason_for_contact
+duration, trajectory (better|worse|same), seen_before, taking_anything,
+urgency, appointment_type (face to face|a phone call), times,
+preferred_clinician, access_needs, reason_for_contact
 (a 2-4 word non-clinical phrase naming the general area, e.g. "knee problem").
 Never guess. Return JSON only.
 
@@ -140,28 +190,39 @@ def is_negative(text: str) -> bool:
 
 
 _ollama_up: Optional[bool] = None
+_ollama_model: Optional[str] = None
+
+
+def ollama_model() -> Optional[str]:
+    """The installed local model to use, checked once. None if Ollama isn't running."""
+    global _ollama_up, _ollama_model
+    if _ollama_up is None:
+        try:
+            resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=1)
+            resp.raise_for_status()
+            installed = {m["name"] for m in resp.json().get("models", [])}
+            installed |= {n.removesuffix(":latest") for n in installed}
+            _ollama_model = next((m for m in OLLAMA_MODELS if m in installed), None)
+        except (requests.RequestException, ValueError, KeyError):
+            _ollama_model = None
+        _ollama_up = _ollama_model is not None
+    return _ollama_model
 
 
 def ollama_available() -> bool:
-    global _ollama_up
-    if _ollama_up is None:
-        try:
-            requests.get(f"{OLLAMA_BASE}/api/tags", timeout=1).raise_for_status()
-            _ollama_up = True
-        except requests.RequestException:
-            _ollama_up = False
-    return _ollama_up
+    return ollama_model() is not None
 
 
 def _ollama_extract(text: str) -> dict:
-    """Local-model extraction. Returns {} if Ollama is not running."""
-    if not ollama_available():
+    """Local-model extraction. Returns {} if no local model is installed."""
+    model = ollama_model()
+    if not model:
         return {}
     try:
         resp = requests.post(
             f"{OLLAMA_BASE}/api/generate",
-            json={"model": OLLAMA_MODEL, "prompt": INTERVIEW_PROMPT + text,
-                  "stream": False, "format": "json"},
+            json={"model": model, "prompt": INTERVIEW_PROMPT + text,
+                  "stream": False, "format": "json", "options": {"temperature": 0}},
             timeout=60,
         )
         resp.raise_for_status()
@@ -192,7 +253,28 @@ def _heuristic_extract(text: str) -> dict:
     if re.search(r"face to face|in person|come in", t):
         found["appointment_type"] = "face to face"
     elif re.search(r"phone call|by phone|over the phone|ring me", t):
-        found["appointment_type"] = "phone"
+        found["appointment_type"] = "a phone call"
+    # Preferences only count when stated as preferences, not as symptoms
+    # ("it hurts in the morning" is not "mornings suit me").
+    if re.search(r"as soon as possible|asap|(seen|appointment|see (someone|a doctor)) today|urgent(ly)? (appointment|please)", t):
+        found["urgency"] = "today if possible"
+    elif re.search(r"(seen|appointment|sometime|some time) this week|this week is fine", t):
+        found["urgency"] = "this week"
+    pref = re.search(r"(prefer|best|suits?|free|available|can (do|come)|good for me|works? for me)[^.]{0,40}", t)
+    pref2 = re.search(r"(mornings?|afternoons?|evenings?)[^.]{0,15}(are|is|would be) (best|good|better|fine|easier)", t)
+    window = (pref.group(0) if pref else "") + " " + (pref2.group(0) if pref2 else "")
+    times = [v for word, v in (("morning", "weekday mornings"), ("afternoon", "weekday afternoons"),
+                               ("evening", "after 5pm"), ("after work", "after 5pm")) if word in window]
+    if times:
+        found["times"] = ", ".join(dict.fromkeys(times))
+    m = re.search(r"\b(?:see|with) (?:dr\.?|doctor) ([A-Z][a-z]+)", text)
+    if m:
+        found["preferred_clinician"] = f"Dr {m.group(1)}"
+    needs = [v for pattern, v in ((r"hard of hearing|\bdeaf\b|hearing aid", "speak slowly and clearly"),
+                                  (r"interpreter|translator", "an interpreter"),
+                                  (r"wheelchair|walking frame|zimmer|mobility scooter", "step-free access")) if re.search(pattern, t)]
+    if needs:
+        found["access_needs"] = ", ".join(needs)
     return found
 
 
@@ -278,7 +360,7 @@ class InterviewSession:
         return [{"key": q.key, "label": q.short or q.text, "value": shown(q),
                  "inferred": q.key in self.inferred} for q in QUESTIONS if q.key in self.answers]
 
-    def submit_answer(self, text: str) -> dict:
+    def submit_answer(self, text: str, spoken: bool = False) -> dict:
         text = text.strip()
         if not text:
             q = self.next_question()
@@ -311,6 +393,9 @@ class InterviewSession:
                 return self._ask(current, ack)
 
         key = current.key
+        heard = text
+        if spoken and current.options:
+            text = match_spoken(current, text) or text
         self.answers[key] = normalise(current, text)
         self.raw[key] = text
         if key == "reason":
@@ -341,8 +426,12 @@ class InterviewSession:
             closing = "Thank you, that's everything. Please check what I've written down and fix anything that's wrong."
             self.transcript.append({"role": "assistant", "text": closing})
             return {"type": "review", "text": closing, "record": self.build_record().to_dict(),
-                    "progress": {"done": len(QUESTIONS), "total": len(QUESTIONS)}}
-        return self._ask(nxt, ack)
+                    "progress": {"done": len(QUESTIONS), "total": len(QUESTIONS)},
+                    "heard": heard if spoken else None}
+        result = self._ask(nxt, ack)
+        result["heard"] = heard if spoken else None
+        result["understood"] = text if spoken and text != heard else None
+        return result
 
     def build_record(self) -> Record:
         a = self.answers

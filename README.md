@@ -21,15 +21,33 @@ uvicorn app.main:app --host 127.0.0.1 --port 8000
 Open http://127.0.0.1:8000. The left side is the patient app; the right side is the
 data boundary view (also standalone at `/panels`).
 
-Optional local components (the app runs text-only without them):
+### Speaking instead of typing
 
-| Component | Install | Used for |
+"Speak your answers instead" on the start page reads each question aloud and listens,
+stopping when she goes quiet. One long answer to the first question can fill several
+later ones ("it's been getting worse for two weeks, mornings are best"), and spoken
+answers like "I don't mind" are matched to the options.
+
+- **Listening** uses local Whisper via faster-whisper. The model downloads once (~140MB)
+  and loads at startup. Chrome's built-in speech recognition is deliberately not used,
+  because it sends audio to Google.
+- **Speaking** uses only voices installed on the device (`localService`), e.g. Microsoft
+  Hazel on Windows. Network voices are filtered out.
+
+### Local models for weak hardware
+
+The reasoning job is narrow (pull ~10 fields out of what she said), so small models are
+enough. Rule-based extraction always runs, so the app works instantly with no model at all;
+the model only runs once, on her opening description.
+
+| Device | Speech in (`GP_AGENT_WHISPER`) | Reasoning (`ollama pull ...`) |
 |---|---|---|
-| faster-whisper `base.en` | `pip install faster-whisper` | Speech in |
-| Kokoro 82M | `pip install kokoro soundfile` | Speech out |
-| Ollama `qwen2.5:3b-instruct` | `ollama pull qwen2.5:3b-instruct` | Tidying answers, skipping questions already answered |
+| Old laptop, 4GB RAM | `tiny.en` | `qwen2.5:1.5b-instruct` or `llama3.2:1b` |
+| Typical 8GB laptop | `base.en` (default) | `qwen2.5:3b-instruct` |
+| 16GB+ | `small.en` | a 7B model, set with `GP_AGENT_LLM` |
 
-Status pills at the top of the patient app show which are active.
+The app uses the first installed model from its preference list, so pulling a smaller one
+is all a weaker device needs.
 
 Tests: `pytest`
 

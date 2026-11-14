@@ -114,6 +114,57 @@ def test_change_from_review_returns_to_review():
     assert s.build_record().preferences.urgency == "today if possible"
 
 
+def test_spoken_ramble_fills_several_questions():
+    s = InterviewSession(session_id="x")
+    s.start()
+    r = s.submit_answer(
+        "Well it's my knee really, it's been getting worse for about two weeks, I've been taking "
+        "paracetamol. I'm a bit hard of hearing. Mornings are best for me, and I'd like to be seen this week.",
+        spoken=True,
+    )
+    assert r["heard"].startswith("Well it's my knee")
+    assert r["key"] == "seen_before"
+    for k in ("duration", "trajectory", "taking_anything", "urgency", "times", "access_needs"):
+        assert k in s.answers, k
+    assert s.answers["times"] == "weekday mornings"
+    assert s.answers["access_needs"] == "speak slowly and clearly"
+
+
+def test_symptom_timing_is_not_a_time_preference():
+    s = InterviewSession(session_id="x")
+    s.start()
+    s.submit_answer("my back hurts most in the morning")
+    assert "times" not in s.answers
+
+
+@pytest.mark.parametrize("key,said,expected", [
+    ("trajectory", "oh it's definitely got worse", "worse"),
+    ("seen_before", "no never", "no"),
+    ("seen_before", "yes a few months back", "yes, longer ago"),
+    ("urgency", "as soon as you can really", "today if possible"),
+    ("appointment_type", "I don't mind either way", "either face to face or a phone call"),
+    ("appointment_type", "can they just ring me", "a phone call"),
+    ("times", "mornings or after work", "weekday mornings, after 5pm"),
+    ("preferred_clinician", "no I don't mind", "no"),
+    ("access_needs", "I use a wheelchair", "step-free access"),
+    ("contact_number", "yes that's right", "yes"),
+    ("contact_number", "no it's 07700 900 456", "no it's 07700 900 456"),
+])
+def test_spoken_answers_map_to_options(key, said, expected):
+    s = InterviewSession(session_id="x")
+    s.start()
+    for q in QUESTIONS_BEFORE(key):
+        s.answers[q] = "x"
+    r = s.submit_answer(said, spoken=True)
+    assert s.answers[key] == expected
+    assert r.get("heard") == said
+
+
+def QUESTIONS_BEFORE(key):
+    from app.interview import QUESTION_KEYS
+    return QUESTION_KEYS[: QUESTION_KEYS.index(key)]
+
+
 def test_distress_drops_content():
     s = InterviewSession(session_id="x")
     s.start()

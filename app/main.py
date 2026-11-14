@@ -1,159 +1,254 @@
-"""FastAPI app: intake form, status API, Twilio webhooks and media websockets."""
+"""FastAPI app. Serves the UI and API on localhost only.
 
+Run:  uvicorn app.main:app --host 127.0.0.1 --port 8000
+"""
 from __future__ import annotations
 
-import logging
-import re
-from contextlib import asynccontextmanager
+import json
+import tempfile
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
 
-from . import store, telephony
-from .agent_bridge import handle_agent_stream
-from .config import settings
-from .hold_listener import handle_hold_stream, press_digits, take_over
-from .models import TERMINAL, CallSession, CallStatus, PatientRequest
+from app import delegation, speech
+from app.call import CallRefused, run_call
+from app.interview import InterviewSession, build_spoken_summary, ollama_available
+from app.record import Record, append_audit, get_audit, init_db, save_record
+from mock.receptionist import PRACTICE_NUMBER
 
-logging.basicConfig(level=logging.INFO)
+STATIC = Path(__file__).resolve().parent.parent / "static"
 
-
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    missing = [
-        name
-        for name, value in {
-            "PUBLIC_URL": settings.public_url,
-            "TWILIO_ACCOUNT_SID": settings.twilio_account_sid,
-            "TWILIO_AUTH_TOKEN": settings.twilio_auth_token,
-            "TWILIO_PHONE_NUMBER": settings.twilio_phone_number,
-            "ELEVENLABS_API_KEY": settings.elevenlabs_api_key,
-            "ELEVENLABS_AGENT_ID": settings.elevenlabs_agent_id,
-        }.items()
-        if not value
-    ]
-    if missing:
-        logging.warning("Missing settings (calls will fail): %s", ", ".join(missing))
-    yield
+app = FastAPI(title="GP booking agent (local-first)")
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+init_db()
 
 
-app = FastAPI(title="GP Queue Assistant", lifespan=lifespan)
-STATIC = Path(__file__).parent / "static"
+@dataclass
+class Session:
+    interview: InterviewSession
+    record: Optional[Record] = None
+    credential: Optional[dict] = None
+    audio_bytes: int = 0
+    last_call: Optional[dict] = None
+    calls_spoken: list[str] = field(default_factory=list)
 
-# If the reason sounds like an emergency, don't queue: send them to 999 / 111.
-EMERGENCY = re.compile(
-    r"chest pain|can'?t breathe|cannot breathe|struggling to breathe|stroke|face drooping|"
-    r"unconscious|seizure|fitting|severe bleeding|suicid|overdose|anaphyla",
-    re.I,
-)
+
+SESSIONS: dict[str, Session] = {}
+LATEST: dict[str, Optional[str]] = {"sid": None}
 
 
-def _twiml(xml: str) -> Response:
-    return Response(content=xml, media_type="application/xml")
+def _session(sid: str) -> Session:
+    if sid not in SESSIONS:
+        raise HTTPException(404, "Unknown session")
+    return SESSIONS[sid]
+
+
+class Answer(BaseModel):
+    text: str
+
+
+class Confirm(BaseModel):
+    edits: dict = {}
+
+
+class CallRequest(BaseModel):
+    scenario: str = "full"
 
 
 @app.get("/")
-async def index() -> FileResponse:
+def index():
     return FileResponse(STATIC / "index.html")
 
 
-@app.post("/api/calls")
-async def start_call(patient: PatientRequest) -> dict:
-    if EMERGENCY.search(patient.reason):
-        raise HTTPException(
-            status_code=422,
-            detail="This sounds like it could be an emergency. Call 999 now, or 111 for urgent advice. "
-            "We won't wait in a GP queue for this.",
-        )
-    session = CallSession(patient=patient)
-    store.add(session)
-    session.log("system", f"Dialling {patient.surgery_name}")
+@app.get("/panels")
+def panels():
+    return FileResponse(STATIC / "panels.html")
+
+
+@app.get("/api/status")
+def status():
+    return {"stt": speech.STT_AVAILABLE, "tts": speech.TTS_AVAILABLE, "ollama": ollama_available()}
+
+
+@app.post("/api/session")
+def new_session():
+    sid = str(uuid.uuid4())
+    s = Session(interview=InterviewSession(session_id=sid))
+    SESSIONS[sid] = s
+    LATEST["sid"] = sid
+    return {"session_id": sid, **s.interview.start()}
+
+
+def _handle_answer(sid: str, s: Session, text: str) -> dict:
+    result = s.interview.submit_answer(text)
+    if result["type"] == "crisis" and result["kind"] == "red_flag":
+        # Labels only. Never the content, never a severity.
+        append_audit(f"session-{sid}", "system", said="Red flag detected; booking stopped",
+                     heard=", ".join(result["flags"]))
+    if result["type"] == "review":
+        s.record = s.interview.build_record()
+    return result
+
+
+@app.post("/api/session/{sid}/answer")
+def answer(sid: str, body: Answer):
+    s = _session(sid)
+    if s.interview.finished:
+        raise HTTPException(409, "Interview already finished")
+    return _handle_answer(sid, s, body.text)
+
+
+@app.post("/api/session/{sid}/audio")
+async def audio(sid: str, file: UploadFile = File(...)):
+    s = _session(sid)
+    if not speech.STT_AVAILABLE:
+        raise HTTPException(501, "Local speech-to-text not installed. Type instead.")
+    data = await file.read()
+    s.audio_bytes += len(data)
+    with tempfile.NamedTemporaryFile(suffix=".webm", delete=False) as tmp:
+        tmp.write(data)
+        path = tmp.name
     try:
-        session.call_sid = await telephony.place_call(session.id, patient.surgery_phone)
-    except Exception as exc:
-        session.status = CallStatus.FAILED
-        session.outcome = f"Could not place the call: {exc}"
-        raise HTTPException(status_code=502, detail=session.outcome) from exc
-    return {"id": session.id}
+        text = speech.transcribe(path)
+    finally:
+        Path(path).unlink(missing_ok=True)
+    return {"transcript": text, **_handle_answer(sid, s, text)}
 
 
-@app.get("/api/calls/{session_id}")
-async def call_status(session_id: str) -> dict:
-    session = _session(session_id)
-    return session.public_view()
+_EDITABLE_CLINICAL = {"description", "duration", "trajectory", "taking_anything"}
+_EDITABLE_PREFS = {"urgency", "appointment_type", "preferred_clinician"}
 
 
-@app.post("/api/calls/{session_id}/takeover")
-async def manual_takeover(session_id: str) -> dict:
-    """Demo/backup control: 'a human has answered, connect the agent now'."""
-    await take_over(_session(session_id), "manual override")
-    return {"ok": True}
+@app.post("/api/session/{sid}/confirm")
+def confirm(sid: str, body: Confirm):
+    s = _session(sid)
+    if s.record is None:
+        raise HTTPException(409, "Interview not finished")
+    r = s.record
+    e = body.edits
+    if "reason_for_contact" in e:
+        r.reason_for_contact = e["reason_for_contact"].strip()
+    for k in _EDITABLE_CLINICAL & e.keys():
+        setattr(r.clinical_detail, k, e[k])
+    for k in _EDITABLE_PREFS & e.keys():
+        setattr(r.preferences, k, e[k] or None if k == "preferred_clinician" else e[k])
+    if "times" in e:
+        r.preferences.times = [t.strip() for t in e["times"].split(";") if t.strip()]
+    if "access_needs" in e:
+        r.access_needs = [t.strip() for t in e["access_needs"].split(";") if t.strip()]
+    r.spoken_summary = build_spoken_summary(r.reason_for_contact, r.preferences)
+    r.confirmed_by_patient = True
+    save_record(r)
+    if s.credential is None:
+        s.credential = delegation.issue_credential()
+    return {"record": r.to_dict(), "credential": s.credential, "practice": delegation.mock_practice_endpoint(s.credential)}
 
 
-@app.post("/api/calls/{session_id}/digits/{digits}")
-async def manual_digits(session_id: str, digits: str) -> dict:
-    if not re.fullmatch(r"[0-9*#]{1,6}", digits):
-        raise HTTPException(status_code=400, detail="Digits must be 0-9, * or #")
-    await press_digits(_session(session_id), digits)
-    return {"ok": True}
+@app.get("/api/session/{sid}/speak")
+def speak(sid: str, field: str = "spoken_summary"):
+    s = _session(sid)
+    if s.record is None:
+        raise HTTPException(409, "No record yet")
+    try:
+        wav = speech.speak(s.record.to_dict(), field)
+    except ValueError as exc:
+        raise HTTPException(403, str(exc))
+    if wav is None:
+        return Response(status_code=204)
+    return Response(wav, media_type="audio/wav")
 
 
-@app.post("/api/calls/{session_id}/cancel")
-async def cancel(session_id: str) -> dict:
-    session = _session(session_id)
-    if session.call_sid and session.status not in TERMINAL:
-        await telephony.hang_up(session.call_sid)
-    session.status = CallStatus.ENDED
-    session.outcome = "Cancelled by you."
-    session.log("system", session.outcome)
-    return {"ok": True}
+@app.post("/api/session/{sid}/call")
+def call(sid: str, body: CallRequest):
+    s = _session(sid)
+    if s.record is None:
+        raise HTTPException(409, "No record yet")
+    try:
+        result = run_call(s.record, s.credential, body.scenario).to_dict()
+    except CallRefused as exc:
+        raise HTTPException(409, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    s.last_call = result
+    s.calls_spoken.extend(result["spoken_out"])
+    return result
 
 
-# ---------- Twilio webhooks ----------
-# TODO before real use: validate X-Twilio-Signature (twilio.request_validator).
-
-@app.post("/twiml/start/{session_id}")
-async def twiml_start(session_id: str) -> Response:
-    return _twiml(telephony.twiml_start_hold(session_id))
-
-
-@app.post("/twiml/keep-holding/{session_id}")
-async def twiml_keep_holding(session_id: str) -> Response:
-    return _twiml(telephony.twiml_keep_holding(session_id))
+@app.post("/api/session/{sid}/revoke")
+def revoke(sid: str):
+    s = _session(sid)
+    if not s.credential:
+        raise HTTPException(409, "No credential to revoke")
+    delegation.revoke_credential(s.credential["credential_id"])
+    return {"credential": s.credential, "practice": delegation.mock_practice_endpoint(s.credential)}
 
 
-@app.post("/twilio/status/{session_id}")
-async def twilio_status(session_id: str, request: Request) -> Response:
-    form = await request.form()
-    session = store.get(session_id)
-    status = str(form.get("CallStatus", ""))
-    if session:
-        session.log("twilio", f"Call {status}")
-        if status in {"busy", "no-answer", "failed", "canceled"}:
-            session.status = CallStatus.FAILED
-            session.outcome = f"The surgery line was {status.replace('-', ' ')}."
-            await telephony.send_sms(session.patient.patient_phone, session.outcome + " Please try again later.")
-        elif status == "completed" and session.status not in TERMINAL:
-            session.status = CallStatus.ENDED
-            session.outcome = session.outcome or "The call ended before a booking was made."
-    return Response(status_code=204)
+@app.post("/api/session/{sid}/credential")
+def reissue(sid: str):
+    s = _session(sid)
+    s.credential = delegation.issue_credential()
+    return {"credential": s.credential, "practice": delegation.mock_practice_endpoint(s.credential)}
 
 
-# ---------- Media websockets ----------
-
-@app.websocket("/ws/hold/{session_id}")
-async def ws_hold(ws: WebSocket, session_id: str) -> None:
-    await handle_hold_stream(ws, session_id)
-
-
-@app.websocket("/ws/agent/{session_id}")
-async def ws_agent(ws: WebSocket, session_id: str) -> None:
-    await handle_agent_stream(ws, session_id)
+@app.get("/api/session/{sid}/audit")
+def audit(sid: str):
+    s = _session(sid)
+    entries = get_audit(f"session-{sid}")
+    if s.record:
+        entries += get_audit(s.record.request_id)
+    return {"entries": entries}
 
 
-def _session(session_id: str) -> CallSession:
-    session = store.get(session_id)
-    if session is None:
-        raise HTTPException(status_code=404, detail="Unknown call")
-    return session
+def _size(value) -> int:
+    return len(json.dumps(value, ensure_ascii=False).encode()) if not isinstance(value, str) else len(value.encode())
+
+
+@app.get("/api/boundary")
+def boundary(sid: Optional[str] = None, mode: str = "local"):
+    sid = sid or LATEST["sid"]
+    if not sid or sid not in SESSIONS:
+        return {"session_id": None, "stays": [], "leaves": [], "bytes_out": 0, "fields_out": 0, "mode": mode}
+    s = SESSIONS[sid]
+    iv = s.interview
+    record = s.record.to_dict() if s.record else None
+    patient_turns = [t["text"] for t in iv.transcript if t["role"] == "patient"]
+
+    stays = [
+        {"label": "Her audio", "value": f"{s.audio_bytes:,} bytes recorded" if s.audio_bytes else "None (typed input)"},
+        {"label": "Full transcript", "value": iv.transcript},
+        {"label": "Clinical detail", "value": record["clinical_detail"] if record else {k: v for k, v in iv.answers.items()}},
+        {"label": "Structured record", "value": record or "Building..."},
+        {"label": "Audit log", "value": f"{len(audit(sid)['entries'])} entries, on this device"},
+    ]
+
+    leaves: list[dict] = []
+    if mode == "naive":
+        if s.audio_bytes:
+            leaves.append({"label": "Her voice recording", "dest": "Cloud speech-to-text", "value": f"{s.audio_bytes:,} bytes of biometric audio", "bytes": s.audio_bytes})
+        for turn in patient_turns:
+            leaves.append({"label": "Transcript turn", "dest": "Cloud LLM API", "value": turn, "bytes": _size(turn)})
+        if record:
+            leaves.append({"label": "Clinical detail", "dest": "Cloud LLM API", "value": record["clinical_detail"], "bytes": _size(record["clinical_detail"])})
+            leaves.append({"label": "Full record", "dest": "Vendor database", "value": record, "bytes": _size(record)})
+            leaves.append({"label": "Spoken summary", "dest": "Cloud TTS", "value": record["spoken_summary"], "bytes": _size(record["spoken_summary"])})
+    if record and record["confirmed_by_patient"]:
+        leaves.append({"label": "Spoken summary", "dest": "Phone line, via carrier", "value": record["spoken_summary"], "bytes": _size(record["spoken_summary"])})
+        leaves.append({"label": "Number dialled", "dest": "Telephony carrier", "value": PRACTICE_NUMBER, "bytes": _size(PRACTICE_NUMBER)})
+    for line in s.calls_spoken:
+        leaves.append({"label": "Agent line on call", "dest": "Phone line, via carrier", "value": line, "bytes": _size(line)})
+
+    return {
+        "session_id": sid,
+        "mode": mode,
+        "crisis": iv.crisis["kind"] if iv.crisis else None,
+        "stays": stays,
+        "leaves": leaves,
+        "bytes_out": sum(i["bytes"] for i in leaves),
+        "fields_out": len(leaves),
+    }

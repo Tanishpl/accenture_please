@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Data Boundary</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-page="panels" class="panels-page">
+  <header class="bar">
+    <div class="toggle" role="tablist">
+      <button id="mode-local" class="on" role="tab">Our architecture</button>
+      <button id="mode-naive" role="tab">Naive cloud build</button>
+    </div>
+    <div class="counter">
+      <span id="fields-out">0</span> fields &middot; <span id="bytes-out">0</span> bytes cross the boundary
+    </div>
+  </header>
+  <div class="columns">
+    <section class="col stays">
+      <h2>Stays on this device</h2>
+      <div id="stays"></div>
+    </section>
+    <section class="col leaves">
+      <h2>Leaves this device</h2>
+      <div id="leaves"></div>
+    </section>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

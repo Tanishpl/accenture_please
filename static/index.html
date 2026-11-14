@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GP Booking Assistant</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-page="patient">
+  <div class="layout">
+    <main class="patient">
+      <header class="bar">
+        <div>
+          <h1>GP Booking Assistant</h1>
+          <p class="sub">Runs on this device. Nothing you say about your health leaves it.</p>
+        </div>
+        <div id="status" class="pills"></div>
+      </header>
+
+      <section id="chat-card" class="card">
+        <div id="chat" class="chat" aria-live="polite"></div>
+        <form id="answer-form" class="composer">
+          <input id="answer" autocomplete="off" placeholder="Type your answer..." aria-label="Your answer">
+          <button type="button" id="mic" class="secondary" title="Speak (local speech-to-text)">Mic</button>
+          <button type="submit">Send</button>
+        </form>
+        <button id="start" class="wide">Start a new request</button>
+      </section>
+
+      <section id="review" class="card hidden">
+        <h2>Check your request</h2>
+        <p class="sub">Correct anything that is wrong. Nothing is dialled until you confirm.</p>
+        <form id="review-form" class="grid"></form>
+        <div class="spoken">
+          <span class="tag">The only thing said aloud</span>
+          <p id="summary-preview"></p>
+        </div>
+        <button id="confirm" class="wide">Confirm and allow the call</button>
+      </section>
+
+      <section id="after" class="card hidden">
+        <h2>Authority to act</h2>
+        <div class="cred">
+          <span class="tag warn">Mocked for demo: a policy ask, not a live service</span>
+          <pre id="credential"></pre>
+          <p>Practice check: <strong id="practice-status"></strong></p>
+          <div class="row">
+            <button id="revoke" class="danger">Revoke authority</button>
+            <button id="reissue" class="secondary hidden">Re-issue</button>
+          </div>
+        </div>
+
+        <h2>Voice</h2>
+        <div class="row">
+          <button id="speak-summary" class="secondary">Play spoken summary</button>
+          <button id="speak-clinical" class="secondary">Try to speak clinical detail</button>
+        </div>
+        <p id="speak-result" class="sub"></p>
+
+        <h2>The call</h2>
+        <div class="row">
+          <label>Practice behaviour
+            <select id="scenario">
+              <option value="full">Full: exercises every fallback</option>
+              <option value="simple">Simple booking</option>
+              <option value="decline">Declines an AI caller</option>
+              <option value="garbled">Can't be understood</option>
+              <option value="voicemail">Closed / voicemail</option>
+            </select>
+          </label>
+          <button id="place-call">Place call (simulated)</button>
+        </div>
+        <div id="call-log" class="call-log"></div>
+        <div id="call-outcome"></div>
+
+        <h2>Audit log</h2>
+        <button id="show-audit" class="secondary">Show everything said on my behalf</button>
+        <div id="audit" class="audit"></div>
+      </section>
+    </main>
+
+    <aside class="boundary-frame">
+      <iframe src="/panels" title="Data boundary view"></iframe>
+    </aside>
+  </div>
+
+  <div id="crisis" class="crisis hidden" role="alertdialog" aria-modal="true">
+    <div class="crisis-box">
+      <h2 id="crisis-title"></h2>
+      <p id="crisis-msg"></p>
+      <div id="crisis-actions" class="crisis-actions"></div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

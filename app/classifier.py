@@ -84,11 +84,11 @@ class HoldClassifier:
             return Verdict(Heard.HOLD, reason="silence/music")
         verdict = self.quick_rules(text)
         if verdict is None:
-            verdict = await self._ask_claude(text) if self._client else self._fallback(text)
+            verdict = await self._ask_claude(text) if self._client else self.keyword_rules(text)
         self.heard_before.append(text)
         return verdict
 
-    def _fallback(self, text: str) -> Verdict:
+    def keyword_rules(self, text: str) -> Verdict:
         """No Claude credentials: crude keyword guess (good enough for a demo)."""
         menu = _menu_digit_for_appointments(text)
         if menu:
@@ -141,24 +141,24 @@ class HoldClassifier:
         except anthropic.AuthenticationError:
             log.warning("No valid Anthropic credentials; using keyword rules for this call")
             self._client = None
-            return self._fallback(text)
+            return self.keyword_rules(text)
         except anthropic.RateLimitError:
             log.warning("Claude rate limited; using keyword fallback")
-            return self._fallback(text)
+            return self.keyword_rules(text)
         except anthropic.APIStatusError as exc:
             log.warning("Claude API error %s; using keyword fallback", exc.status_code)
-            return self._fallback(text)
+            return self.keyword_rules(text)
         except anthropic.APIConnectionError:
             log.warning("Claude unreachable; using keyword fallback")
-            return self._fallback(text)
-        except anthropic.AnthropicError as exc:  # e.g. no credentials configured at all
+            return self.keyword_rules(text)
+        except (anthropic.AnthropicError, TypeError) as exc:  # TypeError: no credentials configured at all
             log.warning("Claude unavailable (%s); using keyword rules for this call", exc)
             self._client = None
-            return self._fallback(text)
+            return self.keyword_rules(text)
 
         if response.stop_reason != "end_turn":
             log.warning("Classifier stopped with %s; using keyword fallback", response.stop_reason)
-            return self._fallback(text)
+            return self.keyword_rules(text)
         raw = next(b.text for b in response.content if b.type == "text")
         data = json.loads(raw)
         digits = data.get("digits")

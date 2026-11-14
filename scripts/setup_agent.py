@@ -1,12 +1,16 @@
-"""Create the ElevenLabs tools + voice agent used for the receptionist conversation.
+"""Create the ElevenLabs text-only agent that writes the receptionist conversation.
 
     .venv/bin/python scripts/setup_agent.py
 
-Prints an ELEVENLABS_AGENT_ID to put in .env. Re-running creates a new agent;
-after that, tweak the prompt/voice in the ElevenLabs dashboard instead.
+Prints an ELEVENLABS_AGENT_ID to put in .env. Re-running creates a new agent
+(tools are reused by name); after that, tweak the prompt in the ElevenLabs
+dashboard instead.
 
-Env: ELEVENLABS_API_KEY (required), ELEVENLABS_VOICE_ID (optional: pick a
-British English voice from the voice library), ELEVENLABS_LLM (optional).
+The agent runs in text-only mode: Twilio transcribes the receptionist, the
+agent replies in text, and app/voice.py speaks the reply. So it needs no
+audio settings.
+
+Env: ELEVENLABS_API_KEY (required), ELEVENLABS_LLM (optional).
 """
 
 import os
@@ -20,15 +24,19 @@ API = "https://api.elevenlabs.io/v1/convai"
 KEY = os.environ.get("ELEVENLABS_API_KEY", "")
 
 SYSTEM_PROMPT = """\
-You are a polite, efficient automated assistant phoning {{surgery_name}}, a UK NHS GP surgery, \
-on behalf of a patient who has asked you to book them an appointment. A receptionist has just \
-answered after the patient's call waited in the queue.
+You are a polite, efficient automated assistant on a phone call to {{surgery_name}}, a UK NHS \
+GP surgery, booking an appointment for a patient who asked you to. A receptionist is on the \
+line. You receive what they say as speech-to-text, so expect small transcription mistakes. \
+Your replies are read aloud by a text-to-speech voice.
+
+You have already introduced yourself with: "Hello, I'm an automated assistant calling on \
+behalf of {{patient_name}}, date of birth {{date_of_birth}}. I'd like to book them a GP \
+appointment, please. Are you able to help?"
 
 Be honest: you are an AI assistant calling for the patient, not the patient. If asked, say \
 the patient gave you their details and consent so they didn't have to wait in the queue.
 
-Patient details (only share what the receptionist asks for, and spell names, postcodes or \
-numbers clearly when asked):
+Patient details (share what the receptionist asks for):
 - Name: {{patient_name}}
 - Date of birth: {{date_of_birth}}
 - Address: {{address}}
@@ -39,30 +47,29 @@ numbers clearly when asked):
 - Preferred clinician: {{preferred_clinician}}
 - Patient happy to be phoned and connected now: {{patient_callback_allowed}}
 
+This phone line only allows a few exchanges, and you'll be told how many are left. Be \
+efficient: answer everything the receptionist asked in one reply, and don't ask questions you \
+don't need answered.
+
 How to handle the call:
-1. Open briefly: say you're an automated assistant calling for {{patient_name}} to book a GP \
-appointment, and ask if they can help.
-2. Answer identity questions from the details above. Never invent details you don't have; say \
-"I don't have that, but I can connect you to the patient" instead.
-3. When offered a slot, accept it only if it fits the patient's availability. Otherwise ask \
-for another. Phone, video and in-person appointments are all fine unless the availability says otherwise.
-4. Once agreed, read the date, time, clinician and place back to confirm, then call \
-record_booking.
-5. If the receptionist needs to speak to the patient (clinical triage, consent checks, \
-anything you can't answer) and callback is allowed, call connect_patient. If not allowed, \
-ask whether the surgery can ring the patient back on {{patient_phone}}.
-6. If no appointment is possible (fully booked, use the online form, call back tomorrow), call \
-report_outcome with a short summary of what they said.
-7. Thank them and call end_call.
+1. Answer identity questions from the details above. Never invent details you don't have; \
+say "I don't have that, but I can connect you to the patient" instead.
+2. When offered a slot, accept it only if it fits the patient's availability. Otherwise ask \
+for another. Phone, video and in-person appointments are all fine unless the availability \
+says otherwise.
+3. Once a slot is agreed, read the date, time, clinician and place back, and call \
+record_booking in that same turn.
+4. If the receptionist needs to speak to the patient (clinical triage, consent checks, \
+anything you can't answer) and callback is allowed, say you're connecting them now and call \
+connect_patient. If callback is not allowed, ask whether the surgery can ring the patient \
+back on {{patient_phone}}.
+5. If no appointment is possible (fully booked, use the online form, call back tomorrow), call \
+report_outcome with a short summary for the patient. Also use it for urgent advice such as \
+999, 111 or A&E.
+6. When the conversation is finished, thank them, say goodbye, and call hang_up.
 
-Keep every reply short and natural; receptionists are busy. Use British English. Do not give \
-medical advice. If the receptionist suggests anything urgent (999, 111, A&E), record it with \
-report_outcome so the patient is told."""
-
-FIRST_MESSAGE = (
-    "Hello, I'm an automated assistant calling on behalf of {{patient_name}}. "
-    "I'd like to book them a GP appointment, please. Are you able to help?"
-)
+Every reply is one to three short, natural spoken sentences: no lists, no formatting. Read \
+phone numbers digit by digit. Use British English. Do not give medical advice."""
 
 TOOLS = [
     {
@@ -107,19 +114,25 @@ TOOLS = [
         "expects_response": True,
         "response_timeout_secs": 20,
     },
+    {
+        "type": "client",
+        "name": "hang_up",
+        "description": "End the phone call. Use after you've said goodbye.",
+        "parameters": {
+            "type": "object",
+            "required": ["reason"],
+            "properties": {"reason": {"type": "string", "description": "Why the call is ending, e.g. 'booking done'"}},
+        },
+        "expects_response": True,
+        "response_timeout_secs": 20,
+    },
 ]
-
-# System tools can't go in the tools collection; they're attached to the agent prompt directly.
-BUILT_IN_TOOLS = {
-    "end_call": {"name": "end_call", "description": "", "params": {"system_tool_type": "end_call"}},
-}
 
 
 def main() -> None:
     if not KEY:
         sys.exit("Set ELEVENLABS_API_KEY in .env first")
-    headers = {"xi-api-key": KEY}
-    with httpx.Client(timeout=30, headers=headers) as http:
+    with httpx.Client(timeout=30, headers={"xi-api-key": KEY}) as http:
         # Reuse tools from an earlier run instead of creating duplicates.
         r = http.get(f"{API}/tools")
         r.raise_for_status()
@@ -137,22 +150,19 @@ def main() -> None:
             tool_ids.append(r.json()["id"])
             print(f"tool {tool['name']}: {tool_ids[-1]}")
 
-        prompt = {"prompt": SYSTEM_PROMPT, "tool_ids": tool_ids, "built_in_tools": BUILT_IN_TOOLS}
+        prompt = {"prompt": SYSTEM_PROMPT, "tool_ids": tool_ids}
         if os.environ.get("ELEVENLABS_LLM"):
             prompt["llm"] = os.environ["ELEVENLABS_LLM"]
-        tts = {"agent_output_audio_format": "ulaw_8000"}
-        if os.environ.get("ELEVENLABS_VOICE_ID"):
-            tts["voice_id"] = os.environ["ELEVENLABS_VOICE_ID"]
 
         body = {
-            "name": "GP queue booking assistant",
+            "name": "GP queue booking assistant (text)",
             "conversation_config": {
-                "agent": {"first_message": FIRST_MESSAGE, "language": "en", "prompt": prompt},
-                "tts": tts,
-                # Twilio media streams are 8kHz mu-law, so no resampling is needed.
-                "asr": {"user_input_audio_format": "ulaw_8000"},
-                # Receptionists pause while typing: be patient before re-prompting.
-                "turn": {"turn_timeout": 15, "turn_eagerness": "patient"},
+                # Empty first message: the agent waits for the receptionist. Our app
+                # speaks the fixed opener itself so taking over costs no time.
+                "agent": {"first_message": "", "language": "en", "prompt": prompt},
+                "conversation": {"text_only": True, "max_duration_seconds": 900},
+                # Receptionists pause while typing: don't re-prompt them.
+                "turn": {"turn_timeout": 60},
             },
         }
         r = http.post(f"{API}/agents/create", json=body)

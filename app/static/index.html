@@ -129,7 +129,8 @@ async function poll() {
   status.textContent = LABELS[s.status] || s.status;
   status.className = 'status ' + (s.status === 'booked' ? 'booked' : s.status === 'failed' ? 'failed' : '');
   const mins = Math.floor(s.waited_seconds / 60), secs = s.waited_seconds % 60;
-  document.getElementById('meta').textContent = `${s.surgery} · waited ${mins}m ${secs}s${s.outcome ? ' · ' + s.outcome : ''}`;
+  const turns = s.turns_left === null || ['booked', 'failed', 'ended', 'handed_to_patient'].includes(s.status) ? '' : ` · ${s.turns_left} trial turns left`;
+  document.getElementById('meta').textContent = `${s.surgery} · waited ${mins}m ${secs}s${turns}${s.outcome ? ' · ' + s.outcome : ''}`;
   const booking = document.getElementById('booking');
   if (s.booking) {
     booking.hidden = false;

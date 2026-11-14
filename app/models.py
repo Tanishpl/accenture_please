@@ -7,8 +7,11 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
+
+from .config import settings
 
 
 def normalise_uk_phone(value: str) -> str:
@@ -108,9 +111,22 @@ class CallSession:
     booking: Booking | None = None
     outcome: str = ""
     events: list[dict] = field(default_factory=list)
+    # Call-flow state (see call_flow.py).
+    phase: str = "dialling"            # dialling -> hold -> agent -> done
+    hops: int = 0                      # Twilio <Gather>/<Redirect> callbacks so far (trial limit)
+    pending_digits: str | None = None  # "Press a key" from the status page, sent on the next callback
+    takeover_requested: bool = False   # "Receptionist answered" from the status page
+    classifier: Any = field(default=None, repr=False)
+    agent: Any = field(default=None, repr=False)
 
     def log(self, kind: str, text: str) -> None:
         self.events.append({"t": round(time.time() - self.created_at, 1), "kind": kind, "text": text})
+
+    def turns_left(self) -> int | None:
+        """Callbacks we can still receive before Twilio's trial hop limit ends the call."""
+        if not settings.max_hops:
+            return None
+        return max(settings.max_hops - 1 - self.hops, 0)
 
     def public_view(self) -> dict:
         """What the status page is allowed to see (no personal details)."""
@@ -121,5 +137,6 @@ class CallSession:
             "waited_seconds": round((self.answered_at or time.time()) - self.created_at),
             "booking": self.booking.__dict__ if self.booking else None,
             "outcome": self.outcome,
+            "turns_left": self.turns_left(),
             "events": self.events[-50:],
         }

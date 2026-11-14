@@ -1,39 +1,66 @@
 # GP Queue Assistant
 
 A patient fills in one form. We phone their GP surgery, wait in the queue,
-press the IVR keys, and when a receptionist answers, an ElevenLabs voice agent
-books the appointment using the patient's details. The patient gets an SMS
-with the result. If the receptionist needs the patient, we ring them and join
-them into the call.
+press the IVR keys, and when a receptionist answers, a voice agent books the
+appointment using the patient's details. The patient gets an SMS with the
+result. If the receptionist needs the patient, we ring them and join them into
+the call.
 
 ```
 Web form ─► FastAPI ─► Twilio outbound call ─► GP surgery
                           │
-   Phase 1: on hold       │  <Start><Stream> forks audio ─► /ws/hold ─► Deepgram STT
-   (cheap)                │  classifier: hold / ivr_menu / human / closed
-                          │  ivr_menu ─► <Play digits>
-                          ▼  human ─► swap TwiML
-   Phase 2: talking       <Connect><Stream> ─► /ws/agent ◄─► ElevenLabs agent websocket
-                          tools: record_booking · connect_patient · report_outcome · end_call
-   Phase 3 (optional)     Twilio conference: receptionist + patient
+   Each phrase on the line: <Gather input="speech"> ─► POST /twiml/heard/{id}
+                          │
+   On hold                │  classifier: hold / ivr_menu / human / closed
+                          │  ivr_menu ─► <Play digits>, keep listening
+                          ▼  human ─► agent's opening line
+   Talking                ElevenLabs agent (text-only) ─► ElevenLabs TTS ─► <Play>
+                          booking ─► SMS · connect_patient ─► conference · hang_up
 ```
 
-Why two phases: queues can last 30 to 60 minutes. Running the voice agent the
-whole time costs per minute, and recorded announcements confuse it. Deepgram
-plus a short classifier call per utterance is much cheaper.
+### Why it's built this way: Twilio trial limits
+
+The project runs on a Twilio **trial** account, which:
+
+- **blocks `<Stream>`**, so there's no live audio. Twilio transcribes each
+  phrase itself (`<Gather input="speech">`) and we reply with new TwiML.
+- **ends the call after 10 `<Gather>`/`<Redirect>` callbacks.** Every phrase
+  heard costs one, so a call gets about 9 exchanges, hold time included. To
+  stretch that:
+  - each response stacks several `<Gather>`s, so silence and hold music cost nothing;
+  - the agent's opening line is a template, so taking over needs no extra turn;
+  - Claude is told how many turns are left and wraps up on the last one.
+  The status page shows the turns left. Set `MAX_HOPS=0` on a paid account.
+- **waits only 5 seconds for each TwiML response.** The ElevenLabs agent
+  usually replies in under a second; each turn is capped at
+  `REPLY_TIMEOUT_SECONDS`, after which the agent asks the receptionist to
+  repeat themselves.
+- plays a "press any key to execute your code" message at the start of every
+  call, only calls verified numbers, and caps calls at 10 minutes.
+
+The agent's brain is an ElevenLabs agent in **text-only mode**: one
+conversation websocket per call, each transcribed phrase sent as a
+`user_message`, and its client tools (`record_booking`, `connect_patient`,
+`report_outcome`, `hang_up`) drive the call. Anything it says after
+`hang_up`/`connect_patient` is dropped.
+
+Speech synthesis starts as soon as the reply text exists. `/audio/{id}.mp3`
+streams the ElevenLabs output to Twilio's `<Play>` while it is still being
+generated.
 
 ## Layout
 
 | File | What it does |
 |---|---|
-| `app/main.py` | Routes: intake API, status API, manual controls, Twilio webhooks, websockets |
-| `app/telephony.py` | Twilio calls, TwiML for each phase, conference handoff, SMS |
-| `app/hold_listener.py` | Phase 1: Twilio audio ─► Deepgram ─► classifier ─► press keys / take over |
-| `app/classifier.py` | Rules (queue announcements, repeats) + Claude for menus and "is that a person?" |
-| `app/agent_bridge.py` | Phase 2: audio bridge Twilio ⇄ ElevenLabs, client tool handlers |
+| `app/main.py` | Routes: intake API, status API, manual controls, Twilio webhooks, agent audio |
+| `app/call_flow.py` | What to do with each phrase heard: hold logic, takeover, agent turns, booking, hand-off |
+| `app/agent.py` | Talks to the ElevenLabs text-only agent: one turn per phrase, tool calls, turn budget |
+| `app/classifier.py` | Rules (queue announcements, menus, greetings, repeats), plus Claude if a key is set |
+| `scripts/setup_agent.py` | Creates the ElevenLabs text-only agent (prompt + client tools) |
+| `app/voice.py` | ElevenLabs text-to-speech, streamed and cached per phrase |
+| `app/telephony.py` | TwiML builders (trial-safe verbs only), placing calls, SMS |
 | `app/models.py` | Intake validation, call session state |
 | `app/static/index.html` | Intake form + live status page |
-| `scripts/setup_agent.py` | Creates the ElevenLabs agent (prompt, tools, μ-law audio) |
 
 ## Setup
 
@@ -42,42 +69,37 @@ python -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env            # fill in keys
 ngrok http 8000                 # put the https URL in PUBLIC_URL
 .venv/bin/python scripts/setup_agent.py   # prints ELEVENLABS_AGENT_ID for .env
-.venv/bin/uvicorn app.main:app --port 8000
+.venv/bin/uvicorn app.main:app --port 8000 --reload
 ```
 
 Open the ngrok URL, fill in the form, and use a teammate's phone number as
 the "surgery". Tests: `.venv/bin/python -m pytest`.
 
 You need:
-- **Twilio**: a number that can call UK numbers. Trial accounts can only call verified numbers.
-- **ElevenLabs**: an API key. Choose a British voice and set `ELEVENLABS_VOICE_ID`.
-  The agent must use `ulaw_8000` for both input and output; the setup script sets this.
-- **Deepgram** (optional): an API key for live transcription while on hold.
-  Without it, press **Receptionist answered** on the status page when someone picks up.
-- **Anthropic** (optional): credentials for the hold classifier. Without them it uses keyword rules.
+- **Twilio**: a trial account is fine. The surgery and patient numbers must be
+  verified caller IDs on the account.
+- **ElevenLabs** (required): an API key, and the agent id from
+  `scripts/setup_agent.py`. The default voice is "George" (British); set
+  `ELEVENLABS_VOICE_ID` to change it.
+- **Anthropic** (optional): `ANTHROPIC_API_KEY` makes the hold classifier
+  smarter about menus and recordings. Without it, keyword rules are used.
 
 ## Demo script
 
-1. The teammate's phone rings ("the surgery"). They play a recording: "For
-   prescriptions press 1, for appointments press 2." The log shows `Pressed 2`.
-2. They play hold music and "You are number 3 in the queue". The log shows `[hold]`.
-3. They answer: "Good morning, Riverside Surgery, Sam speaking." The agent takes over.
-4. They offer a slot. The agent confirms it, the status page shows the booking, and the SMS arrives.
-5. Optional: "I need to speak to the patient." The patient's phone rings and the two are connected.
+1. The teammate's phone rings ("the surgery"). They press any key to get past
+   the Twilio trial message.
+2. They say "For prescriptions press 1, for appointments press 2." The log shows `Pressed 2`.
+3. They say "You are number 3 in the queue." The log shows `[hold]`.
+4. They answer: "Good morning, Riverside Surgery, Sam speaking." The agent introduces itself.
+5. They offer a slot. The agent reads it back, the status page shows the
+   booking, and the SMS arrives.
+6. Optional: "I need to speak to the patient." The patient's phone rings
+   (also a verified number, also with the trial message) and the two are connected.
 
-If transcription is unreliable on the day, use the **Press a key** and
-**Receptionist answered** buttons. The demo still works end to end.
-
-## Test before the demo
-
-- **Does the hold-audio fork survive a key press?** Pressing a key replaces the
-  call's TwiML. The code assumes the `<Start><Stream>` fork keeps running when
-  that happens, but I couldn't confirm it in Twilio's docs. Make one test call
-  and press a key. If the log stops showing `heard` lines afterwards, make
-  `twiml_press_digits` start the stream again.
-- **Exact ElevenLabs fields**: the agent and tool payloads in `setup_agent.py`
-  follow the current API reference, but check the agent in the dashboard after
-  creating it.
+Each of steps 2–5 uses a trial turn, so keep the conversation short. If
+transcription is unreliable, use the **Receptionist answered** and **Press a
+key** buttons. Twilio may refuse to redirect a live call on trial; if so, the
+button's action happens on the next phrase Twilio hears.
 
 ## Before real-world use
 

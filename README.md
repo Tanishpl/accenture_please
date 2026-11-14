@@ -123,12 +123,38 @@ preferences, not free model output, so a local model cannot leak a symptom into 
 | Three unparseable turns | Offers to connect her or call back |
 | Voicemail or closed | Hangs up, schedules a retry, capped at 3 attempts a day |
 
+## Real phone call demo (optional)
+
+After she confirms, the agent can ring a real phone (e.g. a friend playing the
+receptionist) through Twilio and hold the same conversation as the simulated call.
+
+Setup:
+1. Put `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_PHONE_NUMBER` in `.env`
+   (gitignored), or enter them on the page. Values entered on the page are kept in memory
+   only and never written to disk.
+2. On a trial account, the number you call must be a **verified caller ID** in the Twilio
+   console. The callee first hears Twilio's trial message and must press a key; then the
+   agent speaks.
+3. Twilio needs to reach this laptop. Install `cloudflared` (`winget install
+   Cloudflare.cloudflared`) and press "Start tunnel", or set `PUBLIC_URL` to an ngrok URL.
+   Only `/twilio/*` is reachable through the tunnel; every other page returns 404, and each
+   webhook must carry a valid Twilio signature.
+
+What goes to Twilio: the agent's lines, as audio generated **on this device** (Windows
+SAPI voice, or Kokoro if installed, played with `<Play>`; never Twilio's cloud `<Say>`),
+plus the receptionist's speech, which Twilio transcribes as the carrier of that call. What
+never goes: anything she said, her audio, her transcript or clinical detail. The agent's
+lines come only from the speakable fields and fixed safe replies.
+
+Endpoints: `GET/POST /api/phone/config`, `POST /api/phone/tunnel`,
+`POST|GET /api/session/{id}/live-call`, `POST /api/session/{id}/live-call/hangup`;
+Twilio webhooks under `/twilio/`.
+
 ## What is not built
 
-- **Real telephony.** Out of scope by design: the thesis is about data boundaries, and a
-  live line is the likeliest thing to break on stage. The practice side is scripted in
-  `mock/receptionist.py`; its lines can be voiced with ElevenLabs for the demo. ElevenLabs
-  is never used for anything the patient says.
+- **Media-stream telephony.** Live calls are turn by turn (`<Gather>`), because Twilio
+  trial accounts block `<Stream>`. The scripted practice in `mock/receptionist.py` remains
+  the default demo. ElevenLabs is never used for anything the patient says.
 - **Patient voice cloning.** Deliberately excluded: her voice is biometric, voice cloning
   is outside that vendor's own Zero Retention Mode, and the agent announces it is an AI
   anyway.

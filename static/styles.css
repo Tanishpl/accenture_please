@@ -120,6 +120,13 @@ h1:focus { outline: none; }
 @media (max-width: 30em) { .voice-panel { flex-direction: column; text-align: center; } }
 code { font-family: Consolas, monospace; background: var(--white); border: 1px solid var(--grey-4); padding: .1rem .35rem; font-size: .9em; }
 
+/* real phone call demo */
+.call-status { font-weight: 600; font-size: 1.1875rem; margin: 0 0 1rem; }
+.call-status:empty { display: none; }
+.error-summary .error-text { color: var(--red); font-weight: 600; }
+.fieldset-legend.label { font-weight: 600; margin-bottom: .75rem; }
+.button[hidden], .error-message[hidden] { display: none; }
+
 .back-link { margin: -1rem 0 1.5rem; font-size: 1rem; }
 .back-link a { display: inline-block; padding: .25rem 0; }
 

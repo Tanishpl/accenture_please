@@ -205,9 +205,9 @@ def test_full_call_exercises_fallbacks_and_never_leaks_clinical_detail():
     assert "Thursday at 9:20" in res.agreed
     assert res.opening_latency <= 2
     spoken = " ".join(res.spoken_out).lower()
-    assert "cannot confirm her identity" in spoken
+    assert "can't confirm her identity" in spoken
     assert "not clinical" in spoken
-    assert "do not have that answer" in spoken
+    assert "don't have that answer" in spoken
     for secret in ("stairs", "paracetamol", "4 days", "hard of hearing"):
         assert secret not in spoken
     assert len(res.unanswered) == 3

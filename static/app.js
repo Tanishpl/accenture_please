@@ -528,7 +528,13 @@ function initPatient() {
             } }, "Give permission again"),
       );
       callBtn.disabled = !ok;
+      if (liveCallBtn) liveCallBtn.disabled = !ok || liveActive;
     }
+
+    let liveCallBtn = null;
+    let liveActive = false;
+    let pollTimer = null;
+    const stopPolling = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } };
 
     const scenario = h("select.select", { id: "scenario" },
       h("option", { value: "full" }, "Receptionist asks things we can't answer"),
@@ -583,6 +589,7 @@ function initPatient() {
         retry_scheduled: ["The surgery is closed", `We'll try again at ${r.next_attempt ? new Date(r.next_attempt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }) : "a later time"}. We'll make no more than 3 attempts today.`],
         attempt_cap_reached: ["We've tried 3 times today", "We've stopped so it doesn't look like an automated dialler. Please call the surgery yourself."],
         ended_without_booking: ["No appointment was offered", "Please call the surgery yourself."],
+        turn_limit: ["We ran out of time on the call", "The call ended before an appointment was agreed. Please call the surgery yourself, or try again."],
       };
       const [title, text] = titles[r.outcome] || [r.outcome, ""];
       return h("div.warning-callout", h("h3", title), h("p", text), ...list);
@@ -603,6 +610,242 @@ function initPatient() {
               e.unanswered ? h("div", h("strong.tag.tag-red", "Not answered")) : null))))))));
     }
 
+    /* ---- real phone call (demo) ---- */
+
+    const realBox = h("div", { hidden: true });
+    const simulatedBox = h("div",
+      h("div.form-group", h("label.label", { for: "scenario" }, "How the surgery responds"), h("div.hint", "This demo uses a scripted receptionist."), scenario),
+      callBtn,
+      callArea);
+
+    const fill = (node, ...kids) => node.replaceChildren(...kids.filter(Boolean));
+
+    function toE164(raw) {
+      let n = raw.replace(/[\s()-]/g, "");
+      if (/^07\d{9}$/.test(n)) n = "+44" + n.slice(1);
+      else if (/^0\d{9,10}$/.test(n)) n = "+44" + n.slice(1);
+      else if (/^44\d{9,10}$/.test(n)) n = "+" + n;
+      return /^\+\d{10,15}$/.test(n) ? n : null;
+    }
+
+    function problemsBox(problems) {
+      if (!problems || !problems.length) return null;
+      return h("div.error-summary", { role: "alert" },
+        h("h2", "There is a problem"),
+        h("ul", problems.map((p) => h("li", h("span.error-text", p)))));
+    }
+
+    async function showReal() {
+      realBox.replaceChildren(h("p.hint", "Checking phone settings…"));
+      try {
+        renderReal(await api("/api/phone/config"));
+      } catch (err) {
+        realBox.replaceChildren(h("div.warning-callout", h("h3", "Phone demo unavailable"), h("p", err.message)));
+      }
+    }
+
+    function setupForm(cfg) {
+      const sid = h("input.input", { id: "tw-sid", type: "text", autocomplete: "off", spellcheck: "false" });
+      const token = h("input.input", { id: "tw-token", type: "password", autocomplete: "off" });
+      const from = h("input.input.width-20", { id: "tw-from", type: "tel", autocomplete: "off", value: cfg.from_number || "" });
+      const url = h("input.input", { id: "tw-url", type: "url", autocomplete: "off", value: cfg.public_url || "", placeholder: "https://" });
+      const saved = cfg.account_sid_hint ? `Saved (${cfg.account_sid_hint})` : null;
+      const formError = h("div");
+      const save = h("button.button", { type: "submit" }, "Save");
+      const form = h("form", { novalidate: true, onsubmit: async (e) => {
+        e.preventDefault();
+        save.disabled = true;
+        const body = {};
+        if (sid.value.trim()) body.account_sid = sid.value.trim();
+        if (token.value.trim()) body.auth_token = token.value.trim();
+        if (from.value.trim()) body.from_number = toE164(from.value.trim()) || from.value.trim();
+        if (url.value.trim() !== (cfg.public_url || "")) body.public_url = url.value.trim();
+        try {
+          renderReal(await api("/api/phone/config", { method: "POST", body }));
+        } catch (err) {
+          save.disabled = false;
+          formError.replaceChildren(problemsBox([err.message]));
+        } finally {
+          token.value = "";
+        }
+      } },
+        formError,
+        h("div.form-group",
+          h("label.label", { for: "tw-sid" }, "Twilio account SID"),
+          h("div.hint", saved || "Starts with AC. Find it on your Twilio console home page."),
+          sid),
+        h("div.form-group",
+          h("label.label", { for: "tw-token" }, "Twilio auth token"),
+          h("div.hint", saved ? "Saved. Leave blank to keep it." : "Kept on this computer only. It is never shown again."),
+          token),
+        h("div.form-group",
+          h("label.label", { for: "tw-from" }, "Twilio phone number"),
+          h("div.hint", "The number the call comes from, for example +44 7700 900123."),
+          from),
+        h("div.form-group",
+          h("label.label", { for: "tw-url" }, "Public URL (optional)"),
+          h("div.hint", "Leave blank to start a tunnel automatically."),
+          url),
+        save);
+      return form;
+    }
+
+    function tunnelButton(cfg) {
+      if (cfg.public_url) return null;
+      const out = h("div");
+      const btn = h("button.button.secondary", { type: "button", onclick: async () => {
+        btn.disabled = true;
+        btn.textContent = "Starting a tunnel…";
+        try {
+          renderReal(await api("/api/phone/tunnel", { method: "POST" }));
+        } catch (err) {
+          btn.disabled = false;
+          btn.textContent = "Start a tunnel";
+          out.replaceChildren(problemsBox([err.message]));
+        }
+      } }, "Start a tunnel");
+      return h("div", h("p", "Twilio needs a public web address to reach this computer during the call."), btn, out);
+    }
+
+    function renderReal(cfg) {
+      if (!cfg.configured) {
+        fill(realBox,
+          h("h3", "Set up the phone demo"),
+          h("p", "Enter your Twilio details. They are kept on this computer and are never sent to the page again."),
+          problemsBox(cfg.problems),
+          setupForm(cfg),
+          tunnelButton(cfg));
+        return;
+      }
+
+      const to = h("input.input.width-20", { id: "call-to", type: "tel", autocomplete: "tel" });
+      const toError = h("span.error-message", { hidden: true });
+      const status = h("p.call-status", { "aria-live": "polite" });
+      const liveArea = h("div");
+      const hangup = h("button.button.warning", { type: "button", hidden: true, onclick: async () => {
+        hangup.disabled = true;
+        try { await api(`/api/session/${state.sid}/live-call/hangup`, { method: "POST" }); } catch { hangup.disabled = false; }
+      } }, "Hang up");
+
+      liveCallBtn = h("button.button", { type: "button", onclick: async () => {
+        const number = toE164(to.value.trim());
+        const group = to.closest(".form-group");
+        if (!number) {
+          toError.textContent = "Enter a phone number, like 07700 900123";
+          toError.hidden = false;
+          group.classList.add("has-error");
+          to.focus();
+          return;
+        }
+        toError.hidden = true;
+        group.classList.remove("has-error");
+        liveCallBtn.disabled = true;
+        liveActive = true;
+        liveArea.replaceChildren();
+        status.textContent = "Dialling…";
+        try {
+          await api(`/api/session/${state.sid}/live-call`, { method: "POST", body: { to: number } });
+          hangup.hidden = false;
+          hangup.disabled = false;
+          startPolling(status, liveArea, hangup);
+        } catch (err) {
+          liveActive = false;
+          status.textContent = "";
+          liveCallBtn.disabled = state.practice.status !== "authorised";
+          liveArea.replaceChildren(h("div.warning-callout", h("h3", "Call not made"), h("p", err.message)));
+        }
+      } }, "Call this number");
+      liveCallBtn.disabled = state.practice.status !== "authorised";
+
+      fill(realBox,
+        problemsBox(cfg.problems),
+        tunnelButton(cfg),
+        h("div.form-group",
+          h("label.label", { for: "call-to" }, "Phone number to call"),
+          h("div.hint", "The person who answers plays the receptionist. On a Twilio trial account the number must be verified in Twilio, and they'll hear a short trial message and need to press a key."),
+          toError,
+          to),
+        h("div.warning-callout",
+          h("h3", "This makes a real phone call"),
+          h("p", "The assistant introduces itself as an automated assistant calling for a registered patient. It only says the one-sentence summary and answers built from it. Anything else gets a safe reply, like offering a call back."),
+          cfg.from_number ? h("p", `The call comes from ${cfg.from_number}.`) : null),
+        h("div.button-group", liveCallBtn, hangup),
+        status,
+        liveArea,
+        h("details.details",
+          h("summary", h("span", "Change phone settings")),
+          h("div.details-text",
+            cfg.public_url ? h("p.hint", `Twilio reaches this computer at ${cfg.public_url}${cfg.tunnel ? ` (via ${cfg.tunnel})` : ""}.`) : null,
+            setupForm(cfg),
+            tunnelButton(cfg))));
+    }
+
+    function startPolling(status, liveArea, hangup) {
+      stopPolling();
+      const tbody = h("tbody");
+      const table = h("table.table",
+        h("caption", "Call transcript"),
+        h("thead", h("tr", h("th", { scope: "col" }, "Time"), h("th", { scope: "col" }, "Speaker"), h("th", { scope: "col" }, "What was said"))),
+        tbody);
+      liveArea.replaceChildren(table);
+      let shown = 0;
+      let busy = false;
+      const labels = { queued: "Dialling…", initiated: "Dialling…", ringing: "Ringing…", "in-progress": "Connected" };
+
+      async function tick() {
+        if (busy) return;
+        busy = true;
+        try {
+          const r = await api(`/api/session/${state.sid}/live-call`);
+          for (const ev of r.events.slice(shown)) {
+            const spoken = ev.kind === "speech" || ev.speaker !== "system";
+            const who = ev.speaker === "agent" ? "Assistant" : ev.speaker === "practice" ? "Surgery" : "";
+            tbody.append(h(`tr${spoken ? "" : ".event"}`,
+              h("td.time", `${Math.floor(ev.t / 60)}:${String(Math.floor(ev.t % 60)).padStart(2, "0")}`),
+              h("td", spoken ? who : ""),
+              h("td", String(ev.text).replace(/^\[|\]$/g, ""))));
+          }
+          shown = r.events.length;
+          status.textContent = r.ended ? "Call ended" : (labels[r.status] || r.status);
+          if (r.ended) {
+            stopPolling();
+            liveActive = false;
+            hangup.hidden = true;
+            liveCallBtn.disabled = state.practice.status !== "authorised";
+            const missed = ["no-answer", "busy", "failed", "canceled"].includes(r.status) && !r.outcome;
+            liveArea.prepend(missed
+              ? h("div.warning-callout", h("h3", "They didn't answer"), h("p", `The call ${r.status === "busy" ? "was busy" : r.status === "failed" ? "could not be connected" : "was not answered"}. Check the number and try again.`))
+              : outcome({ ...r, outcome: r.outcome || "ended_without_booking", unanswered: r.unanswered || [] }));
+            loadAudit();
+          }
+        } catch (err) {
+          status.textContent = `Lost touch with the call: ${err.message}`;
+        } finally {
+          busy = false;
+        }
+      }
+      tick();
+      pollTimer = setInterval(tick, 1000);
+    }
+
+    const modeName = "call-mode";
+    const modeRadios = h("div.radioes",
+      h("div.radio-item",
+        h("input.radio-input", { id: "mode-sim", name: modeName, type: "radio", value: "sim", checked: true }),
+        h("label.radio-label", { for: "mode-sim" }, "Practice call (scripted receptionist)")),
+      h("div.radio-item",
+        h("input.radio-input", { id: "mode-real", name: modeName, type: "radio", value: "real" }),
+        h("label.radio-label", { for: "mode-real" }, "Real phone call (demo)")));
+    modeRadios.addEventListener("change", (e) => {
+      const real = e.target.value === "real";
+      simulatedBox.hidden = real;
+      realBox.hidden = !real;
+      if (real) showReal();
+    });
+    const modeFieldset = h("fieldset.fieldset",
+      h("legend.fieldset-legend.label", "How should we call?"),
+      modeRadios);
+
     async function trySpeak(field) {
       try {
         const blob = await api(`/api/session/${state.sid}/speak?field=${encodeURIComponent(field)}`);
@@ -622,9 +865,9 @@ function initPatient() {
         h("p", "This permission is simulated. It shows how a proxy credential from the NHS National proxy service could work for software. That service does not support this today.")),
       permission,
       h("h2", "Call the surgery"),
-      h("div.form-group", h("label.label", { for: "scenario" }, "How the surgery responds"), h("div.hint", "This demo uses a scripted receptionist."), scenario),
-      callBtn,
-      callArea,
+      modeFieldset,
+      simulatedBox,
+      realBox,
       h("h2", "What was said on your behalf"),
       auditArea,
       h("h2", "Check the voice boundary"),
@@ -635,6 +878,7 @@ function initPatient() {
       speakResult,
       h("p", h("a", { href: "#", onclick: (e) => { e.preventDefault(); startView(); } }, "Start a new request")),
     );
+    state.cleanup = stopPolling;
     renderPermission();
     loadAudit();
   }

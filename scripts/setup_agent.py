@@ -107,8 +107,12 @@ TOOLS = [
         "expects_response": True,
         "response_timeout_secs": 20,
     },
-    {"type": "system", "name": "end_call", "description": "", "params": {"system_tool_type": "end_call"}},
 ]
+
+# System tools can't go in the tools collection; they're attached to the agent prompt directly.
+BUILT_IN_TOOLS = {
+    "end_call": {"name": "end_call", "description": "", "params": {"system_tool_type": "end_call"}},
+}
 
 
 def main() -> None:
@@ -116,15 +120,24 @@ def main() -> None:
         sys.exit("Set ELEVENLABS_API_KEY in .env first")
     headers = {"xi-api-key": KEY}
     with httpx.Client(timeout=30, headers=headers) as http:
+        # Reuse tools from an earlier run instead of creating duplicates.
+        r = http.get(f"{API}/tools")
+        r.raise_for_status()
+        existing = {t["tool_config"]["name"]: t["id"] for t in r.json().get("tools", [])}
+
         tool_ids = []
         for tool in TOOLS:
+            if tool["name"] in existing:
+                tool_ids.append(existing[tool["name"]])
+                print(f"tool {tool['name']}: {tool_ids[-1]} (existing)")
+                continue
             r = http.post(f"{API}/tools", json={"tool_config": tool})
             if r.status_code >= 400:
                 sys.exit(f"Creating tool {tool['name']} failed: {r.status_code} {r.text}")
             tool_ids.append(r.json()["id"])
             print(f"tool {tool['name']}: {tool_ids[-1]}")
 
-        prompt = {"prompt": SYSTEM_PROMPT, "tool_ids": tool_ids}
+        prompt = {"prompt": SYSTEM_PROMPT, "tool_ids": tool_ids, "built_in_tools": BUILT_IN_TOOLS}
         if os.environ.get("ELEVENLABS_LLM"):
             prompt["llm"] = os.environ["ELEVENLABS_LLM"]
         tts = {"agent_output_audio_format": "ulaw_8000"}

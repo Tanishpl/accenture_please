@@ -14,6 +14,7 @@ from typing import Optional
 
 from app import delegation
 from app.record import Record, _connect, append_audit
+from app.interview import join_or, with_article
 from app.speech import speakable_text
 from mock import receptionist
 
@@ -81,13 +82,13 @@ def answer_from_record(intent: str, record: dict) -> Optional[str]:
     """Build an answer only from speakable fields. None means 'not in record'."""
     prefs = record["preferences"]
     if intent == "reason":
-        return f"It is about {speakable_text(record, 'reason_for_contact')}."
+        return f"It is about {with_article(speakable_text(record, 'reason_for_contact'))}."
     if intent == "urgency":
         return f"She would like to be seen {prefs['urgency']}." if prefs.get("urgency") else None
     if intent == "appointment_type":
         return f"She would prefer {prefs['appointment_type']}." if prefs.get("appointment_type") else None
     if intent == "times":
-        return f"{', '.join(prefs['times']).capitalize()} suits her best." if prefs.get("times") else None
+        return f"{join_or(prefs['times']).capitalize()} would suit her best." if prefs.get("times") else None
     if intent == "clinician":
         speakable_text(record, "preferences")  # same boundary check
         return f"She would like to see {prefs['preferred_clinician']}." if prefs.get("preferred_clinician") else "She has no preference."

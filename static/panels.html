@@ -4,25 +4,34 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Data Boundary</title>
+  <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body data-page="panels" class="panels-page">
-  <header class="bar">
-    <div class="toggle" role="tablist">
+  <header class="panels-head">
+    <div>
+      <h1>Where her data goes</h1>
+      <p class="sub">Same request, two architectures. Updates live.</p>
+    </div>
+    <div class="toggle" role="tablist" aria-label="Architecture">
       <button id="mode-local" class="on" role="tab">Our architecture</button>
       <button id="mode-naive" role="tab">Naive cloud build</button>
     </div>
-    <div class="counter">
-      <span id="fields-out">0</span> fields &middot; <span id="bytes-out">0</span> bytes cross the boundary
-    </div>
   </header>
+
+  <div class="stats">
+    <div class="stat"><span class="stat-num" id="fields-out">0</span><span class="stat-label">items leave the device</span></div>
+    <div class="stat"><span class="stat-num" id="bytes-out">0</span><span class="stat-label">bytes leave the device</span></div>
+    <div class="stat health"><span class="stat-num" id="health-out">0</span><span class="stat-label">items sent to AI vendors</span></div>
+  </div>
+
   <div class="columns">
     <section class="col stays">
-      <h2>Stays on this device</h2>
+      <h2><span class="dot"></span>Stays on this device</h2>
       <div id="stays"></div>
     </section>
     <section class="col leaves">
-      <h2>Leaves this device</h2>
+      <h2><span class="dot"></span>Leaves this device</h2>
       <div id="leaves"></div>
     </section>
   </div>

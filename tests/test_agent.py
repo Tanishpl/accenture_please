@@ -61,14 +61,34 @@ def test_interview_builds_record_and_skips_answered():
     assert "knee" not in rec.spoken_summary.lower().replace("knee problem", "")
     assert "stairs" not in rec.spoken_summary
     assert rec.clinical_detail.taking_anything == "paracetamol"
-    assert rec.access_needs == ["hard of hearing, speak slowly and clearly"]
+    assert rec.access_needs == ["hard of hearing", "speak slowly and clearly"]
+
+
+def test_tapped_options_are_normalised():
+    s = InterviewSession(session_id="x")
+    s.start()
+    s.submit_answer("my shoulder")
+    for text in ("A few days", "Getting worse", "No, this is new", "Nothing", "This week is fine",
+                 "Phone call", "Weekday mornings, After 5pm", "No preference", "Nothing needed"):
+        r = s.submit_answer(text)
+    assert r["key"] == "contact_number" and "07700" in r["text"]
+    rec = s.build_record()
+    assert rec.clinical_detail.trajectory == "worse"
+    assert rec.clinical_detail.taking_anything == ""
+    assert rec.preferences.times == ["weekday mornings", "after 5pm"]
+    assert rec.preferences.preferred_clinician is None
+    assert rec.access_needs == []
+    assert rec.spoken_summary == (
+        "A registered patient would like an appointment, this week, ideally weekday mornings "
+        "or after 5pm. It is about a shoulder problem."
+    )
 
 
 def test_opinion_deflected_but_answer_kept():
     s = InterviewSession(session_id="x")
     s.start()
     r = s.submit_answer("I have a rash on my arm and is it serious?")
-    assert r["text"].startswith("That's one for the doctor")
+    assert r["ack"].startswith("That's one for the doctor")
     assert r["key"] == "duration"
     assert s.reason_phrase == "skin problem"
     r = s.submit_answer("is it serious?")

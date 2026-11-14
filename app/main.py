@@ -18,8 +18,8 @@ from pydantic import BaseModel
 
 from app import delegation, speech
 from app.call import CallRefused, run_call
-from app.interview import InterviewSession, build_spoken_summary, ollama_available
-from app.record import Record, append_audit, get_audit, init_db, save_record
+from app.interview import InterviewSession, _split_list, build_spoken_summary, ollama_available
+from app.record import Preferences, Record, append_audit, get_audit, init_db, save_record
 from mock.receptionist import PRACTICE_NUMBER
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
@@ -139,15 +139,27 @@ def confirm(sid: str, body: Confirm):
     for k in _EDITABLE_PREFS & e.keys():
         setattr(r.preferences, k, e[k] or None if k == "preferred_clinician" else e[k])
     if "times" in e:
-        r.preferences.times = [t.strip() for t in e["times"].split(";") if t.strip()]
+        r.preferences.times = _split_list(e["times"])
     if "access_needs" in e:
-        r.access_needs = [t.strip() for t in e["access_needs"].split(";") if t.strip()]
+        r.access_needs = _split_list(e["access_needs"])
     r.spoken_summary = build_spoken_summary(r.reason_for_contact, r.preferences)
     r.confirmed_by_patient = True
     save_record(r)
     if s.credential is None:
         s.credential = delegation.issue_credential()
     return {"record": r.to_dict(), "credential": s.credential, "practice": delegation.mock_practice_endpoint(s.credential)}
+
+
+class SummaryPreview(BaseModel):
+    reason: str = ""
+    urgency: str = ""
+    times: str = ""
+
+
+@app.post("/api/summary-preview")
+def summary_preview(body: SummaryPreview):
+    prefs = Preferences(urgency=body.urgency, times=_split_list(body.times))
+    return {"spoken_summary": build_spoken_summary(body.reason.strip() or "a general health matter", prefs)}
 
 
 @app.get("/api/session/{sid}/speak")
@@ -231,8 +243,9 @@ def boundary(sid: Optional[str] = None, mode: str = "local"):
     if mode == "naive":
         if s.audio_bytes:
             leaves.append({"label": "Her voice recording", "dest": "Cloud speech-to-text", "value": f"{s.audio_bytes:,} bytes of biometric audio", "bytes": s.audio_bytes})
-        for turn in patient_turns:
-            leaves.append({"label": "Transcript turn", "dest": "Cloud LLM API", "value": turn, "bytes": _size(turn)})
+        if patient_turns:
+            leaves.append({"label": f"Her words ({len(patient_turns)} answers)", "dest": "Cloud LLM API",
+                           "value": iv.transcript, "bytes": _size(patient_turns)})
         if record:
             leaves.append({"label": "Clinical detail", "dest": "Cloud LLM API", "value": record["clinical_detail"], "bytes": _size(record["clinical_detail"])})
             leaves.append({"label": "Full record", "dest": "Vendor database", "value": record, "bytes": _size(record)})

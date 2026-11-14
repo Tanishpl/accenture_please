@@ -25,20 +25,78 @@ from app.safety import (
 OLLAMA_BASE = "http://localhost:11434"
 OLLAMA_MODEL = "qwen2.5:3b-instruct"
 
-QUESTIONS: list[tuple[str, str]] = [
-    ("reason", "What would you like to see the doctor about?"),
-    ("duration", "How long has it been going on?"),
-    ("trajectory", "Has it been getting better, worse, or staying the same?"),
-    ("seen_before", "Have you been seen about this before, and roughly when?"),
-    ("taking_anything", "Are you taking anything for it at the moment?"),
-    ("urgency", "Do you need to be seen urgently, or is some time this week alright?"),
-    ("appointment_type", "Would you prefer to come in, or a phone call?"),
-    ("times", "Which days and times suit you best?"),
-    ("preferred_clinician", "Is there a particular doctor or nurse you would rather see?"),
-    ("access_needs", "Is there anything that would help on the day, like an interpreter, step-free access, or being spoken to slowly?"),
-    ("contact_number", "Is this still the best number to reach you on?"),
+# Number held on this device from setup. Never spoken on the call.
+PATIENT_NUMBER = "07700 900 123"
+
+
+@dataclass(frozen=True)
+class Question:
+    key: str
+    text: str
+    # (label shown on the button, value stored in the record)
+    options: tuple[tuple[str, str], ...] = ()
+    multi: bool = False
+    placeholder: str = "Type your answer"
+
+
+QUESTIONS: list[Question] = [
+    Question("reason", "What would you like to see the doctor about? Tell me in your own words.",
+             placeholder="e.g. my knee has been hurting when I walk"),
+    Question("duration", "How long has it been going on?", (
+        ("A few days", "a few days"), ("About a week", "about a week"),
+        ("A few weeks", "a few weeks"), ("Months or longer", "months or longer"),
+    ), placeholder="or type, e.g. since Tuesday"),
+    Question("trajectory", "Has it been getting better, worse, or staying the same?", (
+        ("Getting worse", "worse"), ("About the same", "same"), ("Getting better", "better"),
+    )),
+    Question("seen_before", "Have you seen anyone about this before?", (
+        ("No, this is new", "no"), ("Yes, recently", "yes, recently"), ("Yes, a while ago", "yes, a while ago"),
+    ), placeholder="or type roughly when"),
+    Question("taking_anything", "Are you taking anything for it at the moment?", (
+        ("Nothing", "nothing"), ("Paracetamol", "paracetamol"), ("Ibuprofen", "ibuprofen"),
+    ), placeholder="or type what you're taking"),
+    Question("urgency", "How soon do you need to be seen?", (
+        ("Today if possible", "today if possible"), ("This week is fine", "this week"),
+        ("Any time soon", "in the next couple of weeks"),
+    )),
+    Question("appointment_type", "Would you rather come in, or have a phone call?", (
+        ("Come in", "face to face"), ("Phone call", "a phone call"), ("Either is fine", "either face to face or a phone call"),
+    )),
+    Question("times", "Which times suit you best? Pick any that work.", (
+        ("Weekday mornings", "weekday mornings"), ("Weekday afternoons", "weekday afternoons"),
+        ("After 5pm", "after 5pm"), ("Any time", "any time"),
+    ), multi=True, placeholder="or type, e.g. not Wednesdays"),
+    Question("preferred_clinician", "Is there a particular doctor or nurse you'd rather see?", (
+        ("No preference", "no"),
+    ), placeholder="or type their name"),
+    Question("access_needs", "Is there anything that would help on the day?", (
+        ("Nothing needed", "no"), ("Speak slowly and clearly", "speak slowly and clearly"),
+        ("Interpreter", "an interpreter"), ("Step-free access", "step-free access"),
+    ), multi=True, placeholder="or type anything else"),
+    Question("contact_number", f"Is {PATIENT_NUMBER} still the best number for the surgery to reach you on?", (
+        ("Yes", "yes"),
+    ), placeholder="or type a different number"),
 ]
-QUESTION_KEYS = [k for k, _ in QUESTIONS]
+QUESTION_KEYS = [q.key for q in QUESTIONS]
+_ACKS = ["Thanks.", "Got it.", "Okay.", "Thank you.", "Noted."]
+_SKIP_LABELS = {
+    "duration": "how long it's been going on",
+    "trajectory": "whether it's changing",
+    "taking_anything": "what you're taking",
+    "appointment_type": "how you'd like to be seen",
+}
+
+
+def normalise(q: Question, text: str) -> str:
+    """Map tapped option labels to their record value; leave free text alone."""
+    by_label = {label.lower(): value for label, value in q.options}
+    parts = [p.strip() for p in re.split(r",|;", text)] if q.multi else [text.strip()]
+    mapped = [by_label.get(p.lower(), p) for p in parts if p]
+    return ", ".join(mapped)
+
+
+def _split_list(text: str) -> list[str]:
+    return [p.strip() for p in re.split(r",|;", text or "") if p.strip()]
 
 INTERVIEW_PROMPT = """You are helping a patient prepare a GP appointment request.
 You do not give medical advice. You do not assess how serious anything is.
@@ -149,25 +207,33 @@ class InterviewSession:
     crisis: Optional[dict] = None
     reason_phrase: str = ""
 
-    def next_question(self) -> Optional[tuple[str, str]]:
-        for key, text in QUESTIONS:
-            if key not in self.answers:
-                return key, text
+    def next_question(self) -> Optional[Question]:
+        for q in QUESTIONS:
+            if q.key not in self.answers:
+                return q
         return None
 
-    def start(self) -> dict:
-        key, text = QUESTIONS[0]
-        self._say(text)
-        return {"type": "question", "key": key, "text": text}
+    def _ask(self, q: Question, ack: str = "") -> dict:
+        self.transcript.append({"role": "assistant", "text": f"{ack} {q.text}".strip()})
+        return {
+            "type": "question",
+            "key": q.key,
+            "ack": ack,
+            "text": q.text,
+            "options": [label for label, _ in q.options],
+            "multi": q.multi,
+            "placeholder": q.placeholder,
+            "progress": {"done": len(self.answers), "total": len(QUESTIONS)},
+        }
 
-    def _say(self, text: str) -> None:
-        self.transcript.append({"role": "assistant", "text": text})
+    def start(self) -> dict:
+        return self._ask(QUESTIONS[0], "Hello. I'll ask a few short questions, the same ones the receptionist would ask.")
 
     def submit_answer(self, text: str) -> dict:
         text = text.strip()
         if not text:
             q = self.next_question()
-            return {"type": "question", "key": q[0], "text": q[1]}
+            return self._ask(q)
 
         if check_distress(text):
             # Not stored, not summarised: the whole session is dropped.
@@ -187,39 +253,45 @@ class InterviewSession:
         self.transcript.append({"role": "patient", "text": text})
         current = self.next_question()
 
-        prefix = ""
+        ack = _ACKS[len(self.answers) % len(_ACKS)]
         if asks_for_opinion(text):
-            prefix = OPINION_MESSAGE + " "
+            ack = OPINION_MESSAGE
             kept = [s for s in re.split(r"(?<=[.?!])\s+|\s+and (?=is|could|should|what)", text) if s and not asks_for_opinion(s)]
             text = " ".join(kept).strip()
             if len(text.split()) < 2:
-                reply = prefix + current[1]
-                self._say(reply)
-                return {"type": "question", "key": current[0], "text": reply}
+                return self._ask(current, ack)
 
-        key = current[0]
-        self.answers[key] = text
+        key = current.key
+        self.answers[key] = normalise(current, text)
         if key == "reason":
             self.reason_phrase = reason_for_contact(text)
 
-        extracted = _heuristic_extract(text)
-        for k, v in _ollama_extract(text).items():
-            if k == "reason_for_contact" and key == "reason":
-                self.reason_phrase = v
-            extracted.setdefault(k, v)
-        for k, v in extracted.items():
-            if k in QUESTION_KEYS and k not in self.answers:
-                self.answers[k] = v
-                self.inferred.add(k)
+        newly_inferred = []
+        tapped = {label.lower() for label, _ in current.options}
+        if not all(p.strip().lower() in tapped for p in text.split(",")):
+            extracted = _heuristic_extract(text)
+            for k, v in _ollama_extract(text).items():
+                if k == "reason_for_contact" and key == "reason":
+                    self.reason_phrase = v
+                extracted.setdefault(k, v)
+            for k, v in extracted.items():
+                if k in QUESTION_KEYS and k not in self.answers:
+                    self.answers[k] = v
+                    self.inferred.add(k)
+                    newly_inferred.append(k)
+        if newly_inferred:
+            things = [_SKIP_LABELS.get(k, k) for k in QUESTION_KEYS if k in newly_inferred]
+            joined = things[0] if len(things) == 1 else ", ".join(things[:-1]) + " and " + things[-1]
+            ack = f"{ack} You've already told me {joined}, so I'll skip {'that' if len(things) == 1 else 'those'}."
 
         nxt = self.next_question()
         if nxt is None:
             self.finished = True
-            closing = "Thank you. Here is what I have. Please check it and correct anything that is wrong."
-            self._say(closing)
-            return {"type": "review", "text": closing, "record": self.build_record().to_dict()}
-        self._say(prefix + nxt[1])
-        return {"type": "question", "key": nxt[0], "text": prefix + nxt[1]}
+            closing = "Thank you, that's everything. Please check what I've written down and fix anything that's wrong."
+            self.transcript.append({"role": "assistant", "text": closing})
+            return {"type": "review", "text": closing, "record": self.build_record().to_dict(),
+                    "progress": {"done": len(QUESTIONS), "total": len(QUESTIONS)}}
+        return self._ask(nxt, ack)
 
     def build_record(self) -> Record:
         a = self.answers
@@ -227,7 +299,7 @@ class InterviewSession:
         prefs = Preferences(
             urgency=a.get("urgency", ""),
             appointment_type=a.get("appointment_type", ""),
-            times=[a["times"]] if a.get("times") else [],
+            times=_split_list(a.get("times", "")),
             preferred_clinician=None if is_negative(a.get("preferred_clinician", "no")) else a["preferred_clinician"],
         )
         reason = self.reason_phrase or reason_for_contact(a.get("reason", ""))
@@ -242,7 +314,7 @@ class InterviewSession:
                 taking_anything="" if is_negative(a.get("taking_anything", "")) else a.get("taking_anything", ""),
             ),
             preferences=prefs,
-            access_needs=[] if is_negative(a.get("access_needs", "no")) else [a["access_needs"]],
+            access_needs=[n for n in _split_list(a.get("access_needs", "")) if not is_negative(n)],
             red_flags=[],
             spoken_summary=build_spoken_summary(reason, prefs),
             confirmed_by_patient=False,
@@ -259,10 +331,20 @@ def build_spoken_summary(reason: str, prefs: Preferences) -> str:
     urgency = prefs.urgency.strip().rstrip(".") if prefs.urgency else "soon"
     parts = [f"A registered patient would like an appointment, {urgency}"]
     if prefs.times:
-        parts.append(f"ideally {', '.join(t.strip().rstrip('.') for t in prefs.times)}")
+        parts.append(f"ideally {join_or(prefs.times)}")
     sentence = ", ".join(parts) + "."
-    needs_article = not (reason.startswith(("a ", "an ")) or reason in _NO_ARTICLE)
-    return f"{sentence} It is about {'a ' if needs_article else ''}{reason}."
+    return f"{sentence} It is about {with_article(reason)}."
 
 
 _NO_ARTICLE = {"mental health", "women's health", "test results"}
+
+
+def with_article(reason: str) -> str:
+    if reason.startswith(("a ", "an ")) or reason in _NO_ARTICLE:
+        return reason
+    return f"a {reason}"
+
+
+def join_or(items: list[str]) -> str:
+    items = [i.strip().rstrip(".") for i in items if i.strip()]
+    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " or " + items[-1]

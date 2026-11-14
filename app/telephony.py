@@ -1,13 +1,14 @@
-"""Twilio: placing the call, steering it between phases, and SMS.
+"""Twilio: placing the call, building TwiML for each step, and SMS.
 
-Call phases, each driven by swapping the call's TwiML:
+Built to run on a Twilio *trial* account, which blocks <Stream> (no live audio)
+and ends the call after ~10 action/redirect callbacks. So the call is a loop of
+<Gather input="speech">: Twilio transcribes each phrase and posts it to
+/twiml/heard/{id}, and our reply is the next piece of TwiML.
 
-1. hold    - <Start><Stream> forks GP audio to /ws/hold/{id} (listen only) while
-             <Pause> keeps the line open. Our server transcribes and classifies it.
-2. dtmf    - <Play digits> answers IVR menus; the forked stream keeps running.
-3. agent   - <Stop> the fork, <Connect><Stream> to /ws/agent/{id}: a two-way
-             audio bridge to the ElevenLabs voice agent.
-4. handoff - optional: GP and patient are joined in a Twilio conference.
+- Several <Gather>s are stacked in each response, so silence and hold music
+  fall through to the next one without costing a callback.
+- The agent's reply plays *inside* the <Gather>, so the receptionist can talk
+  over it and nothing extra is needed to start listening again.
 """
 
 from __future__ import annotations
@@ -16,67 +17,102 @@ import asyncio
 import logging
 
 from twilio.rest import Client
-from twilio.twiml.voice_response import Connect, Dial, Start, Stop, VoiceResponse
+from twilio.twiml.voice_response import Dial, Gather, VoiceResponse
 
+from . import voice
 from .config import settings
 
 log = logging.getLogger(__name__)
 
-HOLD_STREAM = "hold-listener"
-PAUSE_SECONDS = 600
+HOLD_GATHERS = 10          # 10 x 60s of silence before we spend a callback on a redirect
+HOLD_TIMEOUT_SECONDS = 60
+HOLD_HINTS = "press, appointments, reception, surgery, speaking, good morning, good afternoon, how can I help"
+STILL_THERE = "Sorry, are you still there?"
+GIVE_UP = "Sorry, I'll have to try again later. Goodbye."
+POLLY_VOICE = "Polly.Amy"
 
 
 def _client() -> Client:
     return Client(settings.twilio_account_sid, settings.twilio_auth_token)
 
 
-# ---------- TwiML builders (pure functions, unit-tested) ----------
+def _url(path: str) -> str:
+    return f"{settings.public_url}{path}"
 
-def twiml_start_hold(session_id: str) -> str:
+
+def speak(parent: VoiceResponse | Gather, text: str) -> None:
+    """ElevenLabs audio if configured, otherwise Twilio's built-in Polly voice."""
+    if settings.elevenlabs_api_key:
+        parent.play(voice.clip_url(text))
+    else:
+        parent.say(text, voice=POLLY_VOICE, language="en-GB")
+
+
+def _gather(parent: VoiceResponse, session_id: str, timeout: int, hints: str | None = None) -> Gather:
+    return parent.gather(
+        input="speech",
+        action=_url(f"/twiml/heard/{session_id}"),
+        method="POST",
+        timeout=timeout,
+        speech_timeout="auto",
+        speech_model="phone_call",
+        enhanced=True,
+        language="en-GB",
+        hints=hints,
+    )
+
+
+# ---------- TwiML builders ----------
+
+def twiml_hold(session_id: str, digits: str | None = None) -> str:
+    """Listen to the queue. Optionally press IVR keys first."""
     r = VoiceResponse()
-    start = Start()
-    start.stream(name=HOLD_STREAM, url=f"{settings.public_ws_url}/ws/hold/{session_id}", track="inbound_track")
-    r.append(start)
-    r.pause(length=PAUSE_SECONDS)
-    r.redirect(f"{settings.public_url}/twiml/keep-holding/{session_id}", method="POST")
+    if digits:
+        # 'w' = half-second wait, so the IVR has finished speaking.
+        r.play(digits="w" + digits)
+    for _ in range(HOLD_GATHERS):
+        _gather(r, session_id, HOLD_TIMEOUT_SECONDS, HOLD_HINTS)
+    r.redirect(_url(f"/twiml/hold/{session_id}"), method="POST")
     return str(r)
 
 
-def twiml_keep_holding(session_id: str) -> str:
+def twiml_reply(session_id: str, text: str | None) -> str:
+    """Say the agent's line, then wait for the receptionist to answer."""
     r = VoiceResponse()
-    r.pause(length=PAUSE_SECONDS)
-    r.redirect(f"{settings.public_url}/twiml/keep-holding/{session_id}", method="POST")
+    g = _gather(r, session_id, timeout=8)
+    if text:
+        speak(g, text)
+    speak(_gather(r, session_id, timeout=12), STILL_THERE)
+    speak(r, GIVE_UP)
+    r.hangup()
     return str(r)
 
 
-def twiml_press_digits(session_id: str, digits: str) -> str:
+def twiml_goodbye(text: str) -> str:
     r = VoiceResponse()
-    # 'w' = half-second wait, so the IVR has finished speaking.
-    r.play(digits="w" + digits)
-    r.pause(length=PAUSE_SECONDS)
-    r.redirect(f"{settings.public_url}/twiml/keep-holding/{session_id}", method="POST")
+    if text:
+        speak(r, text)
+    r.hangup()
     return str(r)
 
 
-def twiml_connect_agent(session_id: str) -> str:
+def twiml_hangup() -> str:
     r = VoiceResponse()
-    stop = Stop()
-    stop.stream(name=HOLD_STREAM)
-    r.append(stop)
-    connect = Connect()
-    stream = connect.stream(url=f"{settings.public_ws_url}/ws/agent/{session_id}")
-    stream.parameter(name="session_id", value=session_id)
-    r.append(connect)
+    r.hangup()
     return str(r)
 
 
-def twiml_conference(room: str, *, starts_conference: bool, intro: str = "") -> str:
+def conference_room(session_id: str) -> str:
+    return f"gp-{session_id}"
+
+
+def twiml_conference(session_id: str, *, starts_conference: bool, intro: str = "") -> str:
     r = VoiceResponse()
     if intro:
-        r.say(intro, voice="Polly.Amy", language="en-GB")
+        speak(r, intro)
     dial = Dial()
     dial.conference(
-        room,
+        conference_room(session_id),
         start_conference_on_enter=starts_conference,
         end_conference_on_exit=True,
         beep=False,
@@ -85,52 +121,42 @@ def twiml_conference(room: str, *, starts_conference: bool, intro: str = "") -> 
     return str(r)
 
 
-# ---------- Actions on a live call ----------
+# ---------- REST actions ----------
 
 async def place_call(session_id: str, to_number: str) -> str:
     def _create() -> str:
         call = _client().calls.create(
             to=to_number,
             from_=settings.twilio_phone_number,
-            url=f"{settings.public_url}/twiml/start/{session_id}",
-            status_callback=f"{settings.public_url}/twilio/status/{session_id}",
+            url=_url(f"/twiml/start/{session_id}"),
+            status_callback=_url(f"/twilio/status/{session_id}"),
             status_callback_event=["answered", "completed"],
-            time_limit=4 * 60 * 60,
+            # No time_limit: trial accounts reject it, and Twilio's default is already 4 hours.
         )
         return call.sid
 
     return await asyncio.to_thread(_create)
 
 
-async def update_call(call_sid: str, twiml: str) -> None:
-    await asyncio.to_thread(lambda: _client().calls(call_sid).update(twiml=twiml))
+async def redirect_call(call_sid: str, path: str) -> None:
+    """Point a live call at new TwiML. May be refused on trial accounts."""
+    await asyncio.to_thread(lambda: _client().calls(call_sid).update(url=_url(path), method="POST"))
 
 
 async def hang_up(call_sid: str) -> None:
     try:
         await asyncio.to_thread(lambda: _client().calls(call_sid).update(status="completed"))
-    except Exception:  # call may already be over
-        log.info("hang_up: call %s already finished", call_sid)
+    except Exception as exc:  # call may already be over
+        log.info("hang_up %s: %s", call_sid, exc)
 
 
-async def handoff_to_patient(session_id: str, gp_call_sid: str, patient_phone: str, surgery: str) -> None:
-    """Ring the patient and join them with the receptionist in a conference.
-
-    The receptionist hears Twilio's hold music until the patient picks up.
-    """
-    room = f"gp-{session_id}"
-    patient_twiml = twiml_conference(
-        room,
-        starts_conference=True,
-        intro=f"Hello, this is your GP booking assistant. The receptionist at {surgery} "
-        "would like to speak with you. Connecting you now.",
+async def call_patient(session_id: str, patient_phone: str) -> None:
+    """Ring the patient; their TwiML (/twiml/patient/{id}) joins them to the conference."""
+    await asyncio.to_thread(
+        lambda: _client().calls.create(
+            to=patient_phone, from_=settings.twilio_phone_number, url=_url(f"/twiml/patient/{session_id}")
+        )
     )
-
-    def _dial_patient() -> None:
-        _client().calls.create(to=patient_phone, from_=settings.twilio_phone_number, twiml=patient_twiml)
-
-    await asyncio.to_thread(_dial_patient)
-    await update_call(gp_call_sid, twiml_conference(room, starts_conference=False))
 
 
 async def send_sms(to: str, body: str) -> None:

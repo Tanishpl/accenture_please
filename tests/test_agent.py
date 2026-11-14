@@ -68,7 +68,7 @@ def test_tapped_options_are_normalised():
     s = InterviewSession(session_id="x")
     s.start()
     s.submit_answer("my shoulder")
-    for text in ("A few days", "Getting worse", "No, this is new", "Nothing", "This week is fine",
+    for text in ("A few days", "Getting worse", "No, this is new", "No", "This week",
                  "Phone call", "Weekday mornings, After 5pm", "No preference", "Nothing needed"):
         r = s.submit_answer(text)
     assert r["key"] == "contact_number" and "07700" in r["text"]
@@ -93,6 +93,25 @@ def test_opinion_deflected_but_answer_kept():
     assert s.reason_phrase == "skin problem"
     r = s.submit_answer("is it serious?")
     assert r["key"] == "duration"
+
+
+def test_back_undoes_answer_and_inferences():
+    s = InterviewSession(session_id="x")
+    s.start()
+    r = s.submit_answer("my knee has been getting worse for 4 days")
+    assert r["key"] == "seen_before" and "skipped" in r["ack"]
+    r = s.go_back()
+    assert r["key"] == "reason" and r["value"].startswith("my knee")
+    assert "duration" not in s.answers and "trajectory" not in s.answers
+
+
+def test_change_from_review_returns_to_review():
+    s = finished_session()
+    r = s.change("urgency")
+    assert r["key"] == "urgency" and r["value"] == "this week"
+    r = s.submit_answer("Today if possible")
+    assert r["type"] == "review"
+    assert s.build_record().preferences.urgency == "today if possible"
 
 
 def test_distress_drops_content():

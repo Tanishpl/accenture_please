@@ -93,6 +93,8 @@ def _handle_answer(sid: str, s: Session, text: str) -> dict:
                      heard=", ".join(result["flags"]))
     if result["type"] == "review":
         s.record = s.interview.build_record()
+        result["record"] = s.record.to_dict()
+        result["rows"] = s.interview.summary_rows()
     return result
 
 
@@ -102,6 +104,32 @@ def answer(sid: str, body: Answer):
     if s.interview.finished:
         raise HTTPException(409, "Interview already finished")
     return _handle_answer(sid, s, body.text)
+
+
+class ChangeRequest(BaseModel):
+    key: str
+
+
+@app.post("/api/session/{sid}/back")
+def back(sid: str):
+    s = _session(sid)
+    try:
+        result = s.interview.go_back()
+    except ValueError as exc:
+        raise HTTPException(409, str(exc))
+    s.record = None
+    return result
+
+
+@app.post("/api/session/{sid}/change")
+def change(sid: str, body: ChangeRequest):
+    s = _session(sid)
+    try:
+        result = s.interview.change(body.key)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    s.record = None
+    return result
 
 
 @app.post("/api/session/{sid}/audio")
@@ -128,7 +156,7 @@ _EDITABLE_PREFS = {"urgency", "appointment_type", "preferred_clinician"}
 @app.post("/api/session/{sid}/confirm")
 def confirm(sid: str, body: Confirm):
     s = _session(sid)
-    if s.record is None:
+    if s.record is None or not s.interview.finished:
         raise HTTPException(409, "Interview not finished")
     r = s.record
     e = body.edits

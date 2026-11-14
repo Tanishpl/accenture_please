@@ -1,39 +1,38 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-GB">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Data Boundary</title>
+  <title>Where your data goes</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body data-page="panels" class="panels-page">
-  <header class="panels-head">
-    <div>
-      <h1>Where her data goes</h1>
-      <p class="sub">Same request, two architectures. Updates live.</p>
-    </div>
-    <div class="toggle" role="tablist" aria-label="Architecture">
-      <button id="mode-local" class="on" role="tab">Our architecture</button>
-      <button id="mode-naive" role="tab">Naive cloud build</button>
-    </div>
-  </header>
+  <h1 class="panels-title">Where her data goes</h1>
+  <p class="panels-sub">The same request, handled by two different designs. Updates as she answers.</p>
 
-  <div class="stats">
-    <div class="stat"><span class="stat-num" id="fields-out">0</span><span class="stat-label">items leave the device</span></div>
-    <div class="stat"><span class="stat-num" id="bytes-out">0</span><span class="stat-label">bytes leave the device</span></div>
-    <div class="stat health"><span class="stat-num" id="health-out">0</span><span class="stat-label">items sent to AI vendors</span></div>
+  <div class="tabs" role="tablist" aria-label="Architecture">
+    <button id="mode-local" class="tab selected" role="tab" aria-selected="true">This service</button>
+    <button id="mode-naive" class="tab" role="tab" aria-selected="false">Typical cloud AI build</button>
   </div>
 
-  <div class="columns">
-    <section class="col stays">
-      <h2><span class="dot"></span>Stays on this device</h2>
-      <div id="stays"></div>
-    </section>
-    <section class="col leaves">
-      <h2><span class="dot"></span>Leaves this device</h2>
-      <div id="leaves"></div>
-    </section>
+  <div class="tab-panel">
+    <dl class="stats">
+      <div class="stat"><dt>Items leaving the device</dt><dd id="fields-out">0</dd></div>
+      <div class="stat"><dt>Bytes leaving the device</dt><dd id="bytes-out">0</dd></div>
+      <div class="stat"><dt>Items sent to AI companies</dt><dd id="vendor-out">0</dd></div>
+    </dl>
+
+    <div class="columns">
+      <section class="col stays">
+        <h2>Stays on this device</h2>
+        <div id="stays"></div>
+      </section>
+      <section class="col leaves">
+        <h2>Leaves this device</h2>
+        <div id="leaves"></div>
+      </section>
+    </div>
   </div>
   <script src="/static/app.js"></script>
 </body>

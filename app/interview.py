@@ -33,52 +33,60 @@ PATIENT_NUMBER = "07700 900 123"
 class Question:
     key: str
     text: str
-    # (label shown on the button, value stored in the record)
+    # (label shown, value stored in the record)
     options: tuple[tuple[str, str], ...] = ()
     multi: bool = False
-    placeholder: str = "Type your answer"
+    hint: str = ""
+    # (label of the "other" option, label of the text box it reveals); None = no free text
+    other: Optional[tuple[str, str]] = ("Something else", "Tell us more")
+    short: str = ""  # label used on the check-your-answers page
 
 
 QUESTIONS: list[Question] = [
-    Question("reason", "What would you like to see the doctor about? Tell me in your own words.",
-             placeholder="e.g. my knee has been hurting when I walk"),
+    Question("reason", "What would you like to see a doctor about?",
+             hint="Describe it in your own words. For example, “my knee has been hurting when I go up stairs”.",
+             other=None, short="What it's about"),
     Question("duration", "How long has it been going on?", (
         ("A few days", "a few days"), ("About a week", "about a week"),
         ("A few weeks", "a few weeks"), ("Months or longer", "months or longer"),
-    ), placeholder="or type, e.g. since Tuesday"),
-    Question("trajectory", "Has it been getting better, worse, or staying the same?", (
-        ("Getting worse", "worse"), ("About the same", "same"), ("Getting better", "better"),
-    )),
+    ), other=("Something else", "How long?"), short="How long"),
+    Question("trajectory", "Is it getting better, worse, or staying the same?", (
+        ("Getting worse", "worse"), ("Staying the same", "same"), ("Getting better", "better"),
+    ), other=None, short="Better or worse"),
     Question("seen_before", "Have you seen anyone about this before?", (
-        ("No, this is new", "no"), ("Yes, recently", "yes, recently"), ("Yes, a while ago", "yes, a while ago"),
-    ), placeholder="or type roughly when"),
+        ("No, this is new", "no"), ("Yes, in the last few weeks", "yes, in the last few weeks"),
+        ("Yes, longer ago", "yes, longer ago"),
+    ), other=None, short="Seen before"),
     Question("taking_anything", "Are you taking anything for it at the moment?", (
-        ("Nothing", "nothing"), ("Paracetamol", "paracetamol"), ("Ibuprofen", "ibuprofen"),
-    ), placeholder="or type what you're taking"),
-    Question("urgency", "How soon do you need to be seen?", (
-        ("Today if possible", "today if possible"), ("This week is fine", "this week"),
-        ("Any time soon", "in the next couple of weeks"),
-    )),
-    Question("appointment_type", "Would you rather come in, or have a phone call?", (
-        ("Come in", "face to face"), ("Phone call", "a phone call"), ("Either is fine", "either face to face or a phone call"),
-    )),
-    Question("times", "Which times suit you best? Pick any that work.", (
+        ("No", "nothing"), ("Paracetamol", "paracetamol"), ("Ibuprofen", "ibuprofen"),
+    ), hint="Include medicines, creams or anything else you are using.",
+       other=("Something else", "What are you taking?"), short="Taking for it"),
+    Question("urgency", "How soon do you need to be seen?",  (
+        ("Today if possible", "today if possible"), ("This week", "this week"),
+        ("In the next 2 weeks", "in the next couple of weeks"),
+    ), hint="If you need help right now, call 999 or 111 instead.", other=None, short="How soon"),
+    Question("appointment_type", "How would you like to speak to someone?", (
+        ("Come in to the surgery", "face to face"), ("Phone call", "a phone call"),
+        ("Either is fine", "either face to face or a phone call"),
+    ), other=None, short="Type of appointment"),
+    Question("times", "Which times suit you?", (
         ("Weekday mornings", "weekday mornings"), ("Weekday afternoons", "weekday afternoons"),
         ("After 5pm", "after 5pm"), ("Any time", "any time"),
-    ), multi=True, placeholder="or type, e.g. not Wednesdays"),
-    Question("preferred_clinician", "Is there a particular doctor or nurse you'd rather see?", (
+    ), multi=True, hint="Select all that apply.", other=("Something else", "Tell us which times"), short="Times that suit"),
+    Question("preferred_clinician", "Would you like to see a particular doctor or nurse?", (
         ("No preference", "no"),
-    ), placeholder="or type their name"),
-    Question("access_needs", "Is there anything that would help on the day?", (
-        ("Nothing needed", "no"), ("Speak slowly and clearly", "speak slowly and clearly"),
-        ("Interpreter", "an interpreter"), ("Step-free access", "step-free access"),
-    ), multi=True, placeholder="or type anything else"),
-    Question("contact_number", f"Is {PATIENT_NUMBER} still the best number for the surgery to reach you on?", (
+    ), other=("Yes", "Name of doctor or nurse"), short="Doctor or nurse"),
+    Question("access_needs", "Is there anything that would help you at your appointment?", (
+        ("Speak slowly and clearly", "speak slowly and clearly"), ("An interpreter", "an interpreter"),
+        ("Step-free access", "step-free access"), ("Nothing needed", "no"),
+    ), multi=True, hint="Select all that apply.", other=("Something else", "What would help?"), short="Help at appointment"),
+    Question("contact_number", f"Is {PATIENT_NUMBER} the best number to contact you on?", (
         ("Yes", "yes"),
-    ), placeholder="or type a different number"),
+    ), hint="The surgery may need to call you back.", other=("No, use a different number", "Phone number"),
+       short="Contact number"),
 ]
 QUESTION_KEYS = [q.key for q in QUESTIONS]
-_ACKS = ["Thanks.", "Got it.", "Okay.", "Thank you.", "Noted."]
+QUESTION_BY_KEY = {q.key: q for q in QUESTIONS}
 _SKIP_LABELS = {
     "duration": "how long it's been going on",
     "trajectory": "whether it's changing",
@@ -206,6 +214,8 @@ class InterviewSession:
     finished: bool = False
     crisis: Optional[dict] = None
     reason_phrase: str = ""
+    raw: dict[str, str] = field(default_factory=dict)
+    history: list[tuple[str, list[str]]] = field(default_factory=list)
 
     def next_question(self) -> Optional[Question]:
         for q in QUESTIONS:
@@ -220,14 +230,53 @@ class InterviewSession:
             "key": q.key,
             "ack": ack,
             "text": q.text,
+            "hint": q.hint,
             "options": [label for label, _ in q.options],
             "multi": q.multi,
-            "placeholder": q.placeholder,
-            "progress": {"done": len(self.answers), "total": len(QUESTIONS)},
+            "other": list(q.other) if q.other else None,
+            "value": self.raw.get(q.key, ""),
+            "can_go_back": bool(self.history),
+            "progress": {"done": len(self.answers), "total": len(QUESTIONS),
+                         "number": QUESTION_KEYS.index(q.key) + 1},
         }
 
     def start(self) -> dict:
-        return self._ask(QUESTIONS[0], "Hello. I'll ask a few short questions, the same ones the receptionist would ask.")
+        return self._ask(QUESTIONS[0])
+
+    def go_back(self) -> dict:
+        """Undo the last answer (and anything inferred from it) and re-ask it."""
+        if self.crisis:
+            raise ValueError("Interview stopped")
+        self.finished = False
+        if not self.history:
+            return self._ask(QUESTIONS[0])
+        key, inferred = self.history.pop()
+        for k in [key, *inferred]:
+            self.answers.pop(k, None)
+            self.inferred.discard(k)
+            if k != key:
+                self.raw.pop(k, None)
+        return self._ask(QUESTION_BY_KEY[key])
+
+    def change(self, key: str) -> dict:
+        """Re-ask one question from the check-your-answers page."""
+        if self.crisis or key not in QUESTION_BY_KEY:
+            raise ValueError("Cannot change that")
+        self.answers.pop(key, None)
+        self.inferred.discard(key)
+        self.finished = False
+        return self._ask(QUESTION_BY_KEY[key])
+
+    def summary_rows(self) -> list[dict]:
+        """Rows for the check-your-answers page, in question order."""
+        def shown(q: Question) -> str:
+            value = self.raw.get(q.key) or self.answers.get(q.key, "")
+            if q.key == "contact_number" and value.lower() == "yes":
+                return PATIENT_NUMBER
+            return value
+
+        return [{"key": q.key, "label": q.short or q.text, "value": shown(q),
+                 "inferred": q.key in self.inferred} for q in QUESTIONS if q.key in self.answers]
 
     def submit_answer(self, text: str) -> dict:
         text = text.strip()
@@ -253,7 +302,7 @@ class InterviewSession:
         self.transcript.append({"role": "patient", "text": text})
         current = self.next_question()
 
-        ack = _ACKS[len(self.answers) % len(_ACKS)]
+        ack = ""
         if asks_for_opinion(text):
             ack = OPINION_MESSAGE
             kept = [s for s in re.split(r"(?<=[.?!])\s+|\s+and (?=is|could|should|what)", text) if s and not asks_for_opinion(s)]
@@ -263,6 +312,7 @@ class InterviewSession:
 
         key = current.key
         self.answers[key] = normalise(current, text)
+        self.raw[key] = text
         if key == "reason":
             self.reason_phrase = reason_for_contact(text)
 
@@ -279,10 +329,11 @@ class InterviewSession:
                     self.answers[k] = v
                     self.inferred.add(k)
                     newly_inferred.append(k)
+        self.history.append((key, newly_inferred))
         if newly_inferred:
             things = [_SKIP_LABELS.get(k, k) for k in QUESTION_KEYS if k in newly_inferred]
             joined = things[0] if len(things) == 1 else ", ".join(things[:-1]) + " and " + things[-1]
-            ack = f"{ack} You've already told me {joined}, so I'll skip {'that' if len(things) == 1 else 'those'}."
+            ack = f"{ack} You've already told us {joined}, so we've skipped {'that question' if len(things) == 1 else 'those questions'}. You can change {'it' if len(things) == 1 else 'them'} at the end.".strip()
 
         nxt = self.next_question()
         if nxt is None:

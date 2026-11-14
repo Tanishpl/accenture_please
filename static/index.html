@@ -1,142 +1,36 @@
 <!doctype html>
-<html lang="en">
+<html lang="en-GB">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GP Booking Assistant</title>
+  <title>Book a GP appointment</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body data-page="patient">
-  <div class="layout">
-    <main class="patient-app">
-      <header class="app-head">
-        <div class="brand">
-          <div class="logo" aria-hidden="true">+</div>
-          <div>
-            <h1>GP Booking Assistant</h1>
-            <p class="sub lock">Private: runs on this device</p>
-          </div>
-        </div>
-        <button id="restart" class="link hidden">Start over</button>
-      </header>
+  <a class="skip-link" href="#main">Skip to main content</a>
 
-      <ol id="steps" class="steps hidden" aria-label="Progress">
-        <li data-step="1" class="active">Tell me</li>
-        <li data-step="2">Check</li>
-        <li data-step="3">Book</li>
-      </ol>
-
-      <!-- Welcome -->
-      <section id="welcome" class="card welcome">
-        <h2>Book a GP appointment without the 8am phone queue</h2>
-        <ul class="how">
-          <li><span class="num">1</span><div><strong>Tell me what it's about.</strong> I'll ask the same short questions the receptionist would. Most have buttons to tap.</div></li>
-          <li><span class="num">2</span><div><strong>Check what I've written.</strong> Nothing happens until you say it's right.</div></li>
-          <li><span class="num">3</span><div><strong>I ring the surgery for you.</strong> I say I'm an automated assistant and book from your answers.</div></li>
-        </ul>
-        <div class="privacy-note">
-          <strong>What the surgery hears:</strong> one sentence, like <em>"A registered patient would like an appointment this week. It is about a knee problem."</em>
-          Your symptoms and your voice never leave this device.
-        </div>
-        <button id="start" class="primary big">Start</button>
-        <div id="status" class="pills"></div>
-      </section>
-
-      <!-- Interview -->
-      <section id="interview" class="card interview hidden">
-        <div class="progress" aria-hidden="true"><div id="progress-bar"></div></div>
-        <p id="progress-label" class="sub small"></p>
-        <div id="chat" class="chat" aria-live="polite"></div>
-        <div id="reply" class="reply">
-          <div id="chips" class="chips"></div>
-          <form id="answer-form" class="composer">
-            <textarea id="answer" rows="1" autocomplete="off" aria-label="Your answer"></textarea>
-            <button type="button" id="mic" class="icon-btn" title="Speak your answer" aria-label="Speak your answer">
-              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/></svg>
-            </button>
-            <button type="submit" id="send" class="icon-btn send" aria-label="Send">
-              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M3 20.5 21 12 3 3.5 3 10l12 2-12 2z"/></svg>
-            </button>
-          </form>
-        </div>
-      </section>
-
-      <!-- Review -->
-      <section id="review" class="card hidden">
-        <h2>Is this right?</h2>
-        <p class="sub">Tap anything to change it. Nothing is dialled until you confirm.</p>
-        <form id="review-form"></form>
-        <div class="spoken">
-          <span class="tag">The only thing the surgery hears</span>
-          <p id="summary-preview"></p>
-        </div>
-        <button id="confirm" class="primary big">Yes, that's right. Book it</button>
-      </section>
-
-      <!-- After confirmation -->
-      <section id="after" class="hidden">
-        <div class="card">
-          <div class="card-head">
-            <h2>Permission to book for you</h2>
-            <span id="practice-status" class="badge"></span>
-          </div>
-          <dl id="credential" class="kv"></dl>
-          <p class="mock-note">Mocked for the demo. This is how a proxy credential from the NHS National proxy service could work. It is a policy proposal, not a live service.</p>
-          <div class="row">
-            <button id="revoke" class="danger">Revoke permission</button>
-            <button id="reissue" class="secondary hidden">Give permission again</button>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>Ring the surgery</h2>
-          <p class="sub">Simulated call. Choose how the practice behaves:</p>
-          <div class="row">
-            <select id="scenario" aria-label="Practice behaviour">
-              <option value="full">Receptionist asks awkward questions</option>
-              <option value="simple">Straightforward booking</option>
-              <option value="decline">Practice won't talk to an AI</option>
-              <option value="garbled">Bad line, can't be understood</option>
-              <option value="voicemail">Surgery closed</option>
-            </select>
-            <button id="place-call" class="primary">Call now</button>
-          </div>
-          <div id="call-log" class="call-log"></div>
-          <div id="call-outcome"></div>
-        </div>
-
-        <div class="card">
-          <h2>Voice boundary</h2>
-          <p class="sub">The voice can only read allowlisted fields. Try both.</p>
-          <div class="row">
-            <button id="speak-summary" class="secondary">Speak the summary</button>
-            <button id="speak-clinical" class="secondary">Try to speak her symptoms</button>
-          </div>
-          <p id="speak-result" class="result"></p>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <h2>Everything said on your behalf</h2>
-            <button id="show-audit" class="link">Refresh</button>
-          </div>
-          <div id="audit" class="audit"><p class="sub">Nothing yet.</p></div>
-        </div>
-      </section>
-    </main>
-
-    <aside class="boundary-frame">
-      <iframe src="/panels" title="Data boundary view"></iframe>
-    </aside>
+  <header class="header" role="banner">
+    <div class="header-inner">
+      <a class="service-name" href="/" id="home">Book a GP appointment</a>
+      <span class="header-note">Runs on this device</span>
+    </div>
+  </header>
+  <div class="phase-banner">
+    <div class="phase-inner">
+      <strong class="tag tag-blue">Prototype</strong>
+      <span>This is a hackathon demo. It does not contact a real surgery.</span>
+    </div>
   </div>
 
-  <div id="crisis" class="crisis hidden" role="alertdialog" aria-modal="true" aria-labelledby="crisis-title">
-    <div class="crisis-box">
-      <h2 id="crisis-title"></h2>
-      <p id="crisis-msg"></p>
-      <div id="crisis-actions" class="crisis-actions"></div>
-    </div>
+  <div class="layout">
+    <main id="main" class="service" tabindex="-1">
+      <!-- populated by app.js -->
+      <div id="view"></div>
+    </main>
+    <aside class="boundary-frame" aria-label="Data boundary view">
+      <iframe src="/panels" title="Where your data goes"></iframe>
+    </aside>
   </div>
 
   <script src="/static/app.js"></script>

@@ -87,6 +87,31 @@ def test_unsigned_or_forged_webhooks_are_rejected():
     assert c.post("/twilio/heard/x", data={"SpeechResult": "hi"}, headers=bad).status_code == 403
 
 
+def test_unsigned_trial_answer_accepted_only_for_our_exact_call():
+    """Trial accounts send the post-trial-message answer webhook unsigned."""
+    from app import main
+
+    c = TestClient(main.app)
+    rec = make_record()
+    main.SESSIONS["sess-trial"] = main.Session(interview=SimpleNamespace(transcript=[], answers={}, crisis=None), record=rec)
+    live = telephony.LiveCall(call_id="callT", session_id="sess-trial", request_id=rec.request_id,
+                              to_number="+447700900123", brain=CallBrain(rec, max_turns=8, live=True))
+    live.twilio_sid = "CA" + "a" * 32
+    telephony.CALLS["callT"] = live
+    headers = {"host": "abc.trycloudflare.com"}
+    ours = {"AccountSid": telephony.CONFIG.account_sid, "CallSid": live.twilio_sid, "CallStatus": "in-progress"}
+
+    assert c.post("/twilio/answer/callT", data={**ours, "CallSid": "CA" + "b" * 32}, headers=headers).status_code == 403
+    assert c.post("/twilio/answer/callT", data={**ours, "AccountSid": "AC" + "9" * 32}, headers=headers).status_code == 403
+    assert c.post("/twilio/answer/nope", data=ours, headers=headers).status_code == 403
+    forged = {**headers, "x-twilio-signature": "forged"}
+    assert c.post("/twilio/answer/callT", data=ours, headers=forged).status_code == 403
+
+    r = c.post("/twilio/answer/callT", data=ours, headers=headers)
+    assert r.status_code == 200 and "<Gather" in r.text
+    assert "she can call you back" in live.brain.spoken_out[0]
+
+
 def test_audio_route_serves_only_hashed_files(tmp_path):
     from app.main import app
 
@@ -127,7 +152,9 @@ def test_place_call_validates_and_uses_twilio(monkeypatch):
         telephony.place_call("s1", make_record(), cred, "07700 900123")
 
     live = telephony.place_call("s1", make_record(), cred, "+44 7700 900123")
-    assert created["to"] == "+447700900123" and created["timeout"] == 20
+    assert created["to"] == "+447700900123"
+    # Trial accounts refuse these parameters outright.
+    assert not {"timeout", "time_limit", "method", "status_callback_method"} & created.keys()
     assert created["url"] == f"{PUBLIC}/twilio/answer/{live.call_id}"
     assert created["status_callback"].endswith(f"/twilio/status/{live.call_id}")
     assert live.twilio_sid == "CA123" and telephony.CALLS[live.call_id] is live

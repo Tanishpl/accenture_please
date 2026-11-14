@@ -6,8 +6,11 @@ from __future__ import annotations
 
 import json
 import re
+import hmac
+import logging
 import tempfile
 import threading
+from urllib.parse import parse_qsl
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -27,6 +30,7 @@ from app.record import Preferences, Record, append_audit, get_audit, init_db, sa
 from mock.receptionist import PRACTICE_NUMBER
 
 STATIC = Path(__file__).resolve().parent.parent / "static"
+log = logging.getLogger("uvicorn.error")
 
 app = FastAPI(title="GP booking agent (local-first)")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
@@ -408,19 +412,33 @@ async def hang_up_live_call(sid: str):
     return telephony.CALLS[s.live_call_id].summary()
 
 
-async def _twilio_form(request: Request) -> dict:
-    """Read a Twilio webhook and reject it unless Twilio signed it."""
+async def _twilio_form(request: Request, call_id: str) -> dict:
+    """Read a Twilio webhook, rejecting anything that can't be tied to our call.
+
+    Signed requests are checked against the auth token. Trial accounts send the
+    answer webhook after the trial message unsigned, so an unsigned request is
+    accepted only if it names the call we placed: the unguessable call_id in the
+    path, plus that call's exact CallSid and our AccountSid.
+    """
     from twilio.request_validator import RequestValidator
 
-    form = dict(await request.form())
+    form = dict(parse_qsl((await request.body()).decode("utf-8"), keep_blank_values=True))
     token = telephony.CONFIG.auth_token
     url = f"{telephony.CONFIG.public_url}{request.url.path}"
     if request.url.query:
         url += f"?{request.url.query}"
     signature = request.headers.get("x-twilio-signature", "")
-    if not token or not signature or not RequestValidator(token).validate(url, form, signature):
-        raise HTTPException(403, "Invalid Twilio signature")
-    return form
+    if token and signature and RequestValidator(token).validate(url, form, signature):
+        return form
+
+    live = telephony.CALLS.get(call_id)
+    if (not signature and live and live.twilio_sid
+            and hmac.compare_digest(form.get("CallSid", ""), live.twilio_sid)
+            and hmac.compare_digest(form.get("AccountSid", ""), telephony.CONFIG.account_sid)):
+        return form
+
+    log.warning("Rejected Twilio webhook on %s (signed=%s)", request.url.path, bool(signature))
+    raise HTTPException(403, "Invalid Twilio request")
 
 
 def _live(call_id: str) -> telephony.LiveCall:
@@ -442,7 +460,7 @@ def _record_agent_line(live: telephony.LiveCall, text: str) -> None:
 
 @app.post("/twilio/answer/{call_id}")
 async def twilio_answer(call_id: str, request: Request):
-    await _twilio_form(request)
+    await _twilio_form(request, call_id)
     live = _live(call_id)
     received = time.monotonic()
     live.status = "in-progress"
@@ -456,7 +474,7 @@ async def twilio_answer(call_id: str, request: Request):
 
 @app.post("/twilio/heard/{call_id}")
 async def twilio_heard(call_id: str, request: Request):
-    form = await _twilio_form(request)
+    form = await _twilio_form(request, call_id)
     live = _live(call_id)
     heard = (form.get("SpeechResult") or "").strip()
     if live.ended:
@@ -476,7 +494,7 @@ async def twilio_heard(call_id: str, request: Request):
 
 @app.post("/twilio/status/{call_id}")
 async def twilio_status(call_id: str, request: Request):
-    form = await _twilio_form(request)
+    form = await _twilio_form(request, call_id)
     live = _live(call_id)
     status_value = form.get("CallStatus", "")
     if status_value:

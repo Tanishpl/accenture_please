@@ -240,11 +240,9 @@ def place_call(session_id: str, record, credential: Optional[dict], to_number: s
         to=to_number,
         from_=CONFIG.from_number,
         url=f"{CONFIG.public_url}/twilio/answer/{call.call_id}",
-        method="POST",
         status_callback=f"{CONFIG.public_url}/twilio/status/{call.call_id}",
-        status_callback_event=["initiated", "ringing", "answered", "completed"],
-        status_callback_method="POST",
-        timeout=20,
+        # Trial accounts reject timeout, method and other events. Defaults: POST, rings 60s.
+        status_callback_event=["answered", "completed"],
     )
     call.twilio_sid = created.sid
     CALLS[call.call_id] = call

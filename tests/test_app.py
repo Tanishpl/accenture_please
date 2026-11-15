@@ -1,5 +1,6 @@
 import os
 import asyncio
+import logging
 from types import SimpleNamespace
 
 os.environ.setdefault("PUBLIC_URL", "https://test.example")
@@ -107,6 +108,27 @@ async def test_gemini_extra_text_cannot_change_reason(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_gemini_prompt_excludes_appointment_reason():
+    prompts = []
+
+    class FakeModels:
+        async def generate_content(self, **kwargs):
+            prompts.append(kwargs["contents"])
+            return SimpleNamespace(parsed={"label": "human"}, text='{"label":"human"}')
+
+    class FakeClient:
+        models = FakeModels()
+
+    classifier = HoldClassifier("Riverside Surgery", "unique private appointment reason")
+    classifier._client = FakeClient()
+
+    await classifier._ask_llm("Good morning, reception speaking.")
+
+    assert "unique private appointment reason" not in prompts[0]
+    assert "Riverside Surgery" in prompts[0]
+
+
+@pytest.mark.asyncio
 async def test_unknown_gemini_label_is_inconclusive(monkeypatch):
     class FakeModels:
         async def generate_content(self, **kwargs):
@@ -159,6 +181,74 @@ def test_strip_tone_tags_preserves_ordinary_brackets():
     )
 
 
+def test_tts_clip_ids_are_randomly_mapped_and_expire(monkeypatch):
+    class FakeClip:
+        def __init__(self, text, content_hash=""):
+            self.text = text
+            self.content_hash = content_hash
+            self.created_at = voice.time.monotonic()
+            self.failed = False
+
+    clock = [1000.0]
+    ids = iter(("random-one", "random-two"))
+    monkeypatch.setattr(voice, "Clip", FakeClip)
+    monkeypatch.setattr(voice.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(voice.secrets, "token_urlsafe", lambda _: next(ids))
+    voice._clips.clear()
+    voice._clip_ids.clear()
+
+    first_url = voice.clip_url("A private reply")
+    assert voice.clip_url("A private reply") == first_url
+    first_id = first_url.rsplit("/", 1)[-1][:-4]
+
+    clock[0] += voice.CLIP_RETAIN_SECONDS + 1
+    assert voice.get(first_id) is None
+
+    second_url = voice.clip_url("A private reply")
+    assert second_url != first_url
+    assert second_url.rsplit("/", 1)[-1][:-4] == "random-two"
+    voice._clips.clear()
+    voice._clip_ids.clear()
+
+
+@pytest.mark.asyncio
+async def test_tts_failure_logs_only_error_category(monkeypatch, caplog):
+    class FakeResponse:
+        status_code = 500
+
+        async def aiter_bytes(self):
+            if False:
+                yield b""
+
+    class FakeStream:
+        async def __aenter__(self):
+            return FakeResponse()
+
+        async def __aexit__(self, *args):
+            return None
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        def stream(self, *args, **kwargs):
+            return FakeStream()
+
+    monkeypatch.setattr(voice.httpx, "AsyncClient", FakeClient)
+    caplog.set_level(logging.WARNING, logger="app.voice")
+    clip = voice.Clip("private reply text")
+    await clip._task
+
+    assert "http_status" in caplog.text
+    assert "private reply text" not in caplog.text
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("show_transcripts", [False, True])
 async def test_transcript_visibility_modes(monkeypatch, show_transcripts):
@@ -182,6 +272,66 @@ async def test_transcript_visibility_modes(monkeypatch, show_transcripts):
         assert ("receptionist", "receptionist turn received") in texts
         assert ("agent", "agent reply generated") in texts
         assert all("Good morning" not in text and "[happy]" not in text for _, text in texts)
+
+
+def test_store_purges_terminal_and_old_non_terminal_sessions(monkeypatch):
+    from app import store
+
+    now = 10_000.0
+    monkeypatch.setattr(store.time, "time", lambda: now)
+    store._sessions.clear()
+
+    terminal = CallSession(patient=PatientRequest(**PATIENT))
+    terminal.status = CallStatus.ENDED
+    terminal.created_at = now - store.RETAIN_SECONDS - 1
+    stale = CallSession(patient=PatientRequest(**PATIENT))
+    stale.created_at = now - store.NON_TERMINAL_RETAIN_SECONDS - 1
+    active = CallSession(patient=PatientRequest(**PATIENT))
+    active.created_at = now - 1
+    active.status = CallStatus.TALKING
+    store._sessions.update({
+        "terminal": terminal,
+        "stale": stale,
+        "active": active,
+    })
+
+    store._purge()
+
+    assert set(store._sessions) == {"active"}
+    store._sessions.clear()
+
+
+@pytest.mark.asyncio
+async def test_startup_logs_privacy_and_starts_cleanup(monkeypatch, caplog):
+    started = []
+
+    async def fake_cleanup_loop(interval):
+        started.append(interval)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(main.store, "cleanup_loop", fake_cleanup_loop)
+    monkeypatch.setattr(
+        main,
+        "settings",
+        SimpleNamespace(
+            public_url="",
+            twilio_account_sid="",
+            twilio_auth_token="",
+            twilio_phone_number="",
+            elevenlabs_api_key="",
+            elevenlabs_agent_id="",
+            show_transcripts=False,
+        ),
+    )
+    caplog.set_level(logging.INFO, logger="app.main")
+
+    async with main.lifespan(main.app):
+        await asyncio.sleep(0)
+
+    assert started == [60]
+    assert "SHOW_TRANSCRIPTS=off" in caplog.text
+    assert "GEMINI_API_KEY=unset" in caplog.text
+    assert "external services=Twilio" in caplog.text
 
 
 def test_twiml_uses_only_trial_safe_verbs():

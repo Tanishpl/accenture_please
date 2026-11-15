@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -35,11 +36,24 @@ async def lifespan(_app: FastAPI):
     ]
     if missing:
         log.warning("Missing settings (calls will fail): %s", ", ".join(missing))
-    if not os.environ.get("GEMINI_API_KEY"):
-        log.info("No GEMINI_API_KEY: the hold classifier uses keyword rules")
+    log.info(
+        "Privacy startup: SHOW_TRANSCRIPTS=%s; GEMINI_API_KEY=%s; external services=Twilio (telephony/STT/SMS), "
+        "ElevenLabs (agent/TTS)%s",
+        "on" if settings.show_transcripts else "off",
+        "set" if os.environ.get("GEMINI_API_KEY") else "unset",
+        ", Gemini (hold classifier)" if os.environ.get("GEMINI_API_KEY") else "",
+    )
     if settings.show_transcripts:
         log.warning("SHOW_TRANSCRIPTS enabled: fake data only")
-    yield
+    cleanup_task = asyncio.create_task(store.cleanup_loop(60))
+    try:
+        yield
+    finally:
+        cleanup_task.cancel()
+        try:
+            await cleanup_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="GP Queue Assistant", lifespan=lifespan)

@@ -119,8 +119,8 @@ class HoldClassifier:
         previous = "\n".join(f"- {t}" for t in self.heard_before[-8:]) or "(nothing yet)"
         prompt = (
             f"We are an automated assistant phoning {self.surgery_name}, a UK NHS GP surgery, "
-            f"to book an appointment (reason: {self.reason}). We are waiting in the phone queue "
-            "and hear a speech-to-text transcript of the line.\n\n"
+            "to book an appointment. We are waiting in the phone queue and hear a "
+            "speech-to-text transcript of the line.\n\n"
             f"Earlier on this call we heard:\n{previous}\n\n"
             f"Latest audio transcript:\n\"{text}\"\n\n"
             "Classify the latest audio:\n"

@@ -58,8 +58,7 @@
       </div>
       <div class="nhsuk-form-group">
         <label class="nhsuk-label" for="f-date_of_birth">Date of birth</label>
-        <div class="nhsuk-hint" id="f-date_of_birth-hint">For example, 14 March 1990</div>
-        <input class="nhsuk-input nhsuk-input--width-20" id="f-date_of_birth" name="date_of_birth" required aria-describedby="f-date_of_birth-hint">
+        <input class="nhsuk-input nhsuk-input--width-10" id="f-date_of_birth" name="date_of_birth" type="date" min="1900-01-01" required autocomplete="bday">
       </div>
       <div class="nhsuk-form-group">
         <label class="nhsuk-label" for="f-nhs_number">NHS number (optional)</label>
@@ -157,6 +156,14 @@
 const form = document.getElementById('intake');
 const errorBox = document.getElementById('error');
 let callId = null, timer = null;
+form.date_of_birth.max = new Date().toISOString().slice(0, 10);
+
+// The date picker gives "1990-03-14"; the voice agent reads this out, so send "14 March 1990".
+function spokenDate(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  return new Date(y, m - 1, d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+}
 
 const LABELS = {
   dialling: 'Dialling the surgery…', on_hold: 'Waiting in the queue', talking_to_receptionist: 'Talking to the receptionist',
@@ -169,6 +176,7 @@ form.addEventListener('submit', async (e) => {
   const data = Object.fromEntries(new FormData(form));
   data.allow_patient_callback = form.allow_patient_callback.checked;
   data.consent = form.consent.checked;
+  data.date_of_birth = spokenDate(data.date_of_birth);
   const res = await fetch('/api/calls', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
   const body = await res.json();
   if (!res.ok) {

@@ -29,7 +29,7 @@ The project runs on a Twilio **trial** account, which:
   stretch that:
   - each response stacks several `<Gather>`s, so silence and hold music cost nothing;
   - the agent's opening line is a template, so taking over needs no extra turn;
-  - Claude is told how many turns are left and wraps up on the last one.
+  - the agent is told how many turns are left and wraps up on the last one.
   The status page shows the turns left. Set `MAX_HOPS=0` on a paid account.
 - **waits only 5 seconds for each TwiML response.** The ElevenLabs agent
   usually replies in under a second; each turn is capped at
@@ -55,7 +55,7 @@ generated.
 | `app/main.py` | Routes: intake API, status API, manual controls, Twilio webhooks, agent audio |
 | `app/call_flow.py` | What to do with each phrase heard: hold logic, takeover, agent turns, booking, hand-off |
 | `app/agent.py` | Talks to the ElevenLabs text-only agent: one turn per phrase, tool calls, turn budget |
-| `app/classifier.py` | Rules (queue announcements, menus, greetings, repeats), plus Claude if a key is set |
+| `app/classifier.py` | Rules for queue announcements, menus, greetings and repeats |
 | `scripts/setup_agent.py` | Creates the ElevenLabs text-only agent (prompt + client tools) |
 | `app/voice.py` | ElevenLabs text-to-speech, streamed and cached per phrase |
 | `app/telephony.py` | TwiML builders (trial-safe verbs only), placing calls, SMS |

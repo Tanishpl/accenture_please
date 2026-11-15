@@ -1,7 +1,6 @@
 import os
 
 os.environ.setdefault("PUBLIC_URL", "https://test.example")
-os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["ELEVENLABS_API_KEY"] = ""  # Polly <Say>, so TwiML can be built without an event loop
 os.environ["ELEVENLABS_AGENT_ID"] = "agent_test"
 os.environ["MAX_HOPS"] = "10"
@@ -23,7 +22,7 @@ PATIENT = dict(
 
 @pytest.fixture(autouse=True)
 def offline(monkeypatch):
-    """No real Twilio, SMS or Claude calls in tests."""
+    """No real Twilio or SMS calls in tests."""
     sent = []
 
     async def fake_sms(to, body):
@@ -32,16 +31,12 @@ def offline(monkeypatch):
     async def fake_call(session_id, to):
         return "CA123"
 
-    async def keyword_only(self, text):
-        return self.keyword_rules(text)
-
     async def noop(*a, **k):
         return None
 
     monkeypatch.setattr(telephony, "send_sms", fake_sms)
     monkeypatch.setattr(telephony, "place_call", fake_call)
     monkeypatch.setattr(telephony, "call_patient", noop)
-    monkeypatch.setattr(HoldClassifier, "_ask_claude", keyword_only)
     return sent
 
 
@@ -72,7 +67,6 @@ def test_menu_digit():
 @pytest.mark.asyncio
 async def test_classifier_rules():
     c = HoldClassifier("Riverside Surgery", "cough")
-    c._client = None
     assert (await c.classify("You are number 5 in the queue.")).heard == Heard.HOLD
     v = await c.classify("Welcome. For appointments, press 1. For prescriptions, press 2.")
     assert v.heard == Heard.IVR_MENU and v.digits == "1"

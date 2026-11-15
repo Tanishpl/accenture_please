@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -35,8 +34,6 @@ async def lifespan(_app: FastAPI):
     ]
     if missing:
         log.warning("Missing settings (calls will fail): %s", ", ".join(missing))
-    if not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-        log.info("No ANTHROPIC_API_KEY: the hold classifier uses keyword rules")
     yield
 
 

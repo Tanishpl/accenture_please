@@ -2,7 +2,7 @@
 
 hold:  classify the phrase (queue message / IVR menu / closed / a person).
        A person -> the agent says its opening line, and we move to 'agent'.
-agent: Claude writes the reply; we record bookings and outcomes, and either
+agent: the ElevenLabs agent writes the reply; we record bookings and outcomes, and either
        keep listening, connect the patient, or hang up.
 
 Every function returns the TwiML Twilio should run next.

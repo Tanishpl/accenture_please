@@ -4,96 +4,166 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>QueueSkip GP</title>
+<!-- NHS.UK frontend (https://github.com/nhsuk/nhsuk-frontend), styles only -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nhsuk-frontend@10.7.1/dist/nhsuk/nhsuk-frontend.min.css">
 <style>
-  :root { --ink:#1d2433; --muted:#5b6475; --line:#d9dee7; --bg:#f6f8fb; --card:#fff; --accent:#005eb8; --ok:#007f3b; --bad:#d5281b; }
-  * { box-sizing: border-box; }
-  body { margin:0; font:16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); }
-  main { max-width: 640px; margin: 0 auto; padding: 32px 16px 64px; }
-  h1 { font-size: 1.6rem; margin: 0 0 4px; }
-  p.lede { color: var(--muted); margin: 0 0 24px; }
-  form, .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; }
-  fieldset { border:0; padding:0; margin:0 0 20px; }
-  legend { font-weight:600; margin-bottom:8px; }
-  label { display:block; font-size:.9rem; margin:12px 0 4px; }
-  label small { color:var(--muted); font-weight:normal; }
-  input, textarea { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font:inherit; }
-  textarea { min-height: 72px; resize: vertical; }
-  .row { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
-  @media (max-width: 520px) { .row { grid-template-columns: 1fr; } }
-  .check { display:flex; gap:10px; align-items:flex-start; margin-top:12px; font-size:.95rem; }
-  .check input { width:auto; margin-top:4px; }
-  button { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:12px 18px; font:inherit; font-weight:600; cursor:pointer; }
-  button.secondary { background:#fff; color:var(--accent); border:1px solid var(--accent); }
-  .warn { background:#fff4e5; border-left:4px solid #ffb81c; padding:10px 12px; border-radius:6px; font-size:.9rem; margin-bottom:20px; }
-  .error { color:var(--bad); margin-top:12px; white-space:pre-line; }
-  .status { font-size:1.25rem; font-weight:700; }
-  .status.booked { color:var(--ok); } .status.failed { color:var(--bad); }
-  .meta { color:var(--muted); margin:4px 0 16px; }
-  .controls { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:16px; }
-  ol.log { list-style:none; padding:0; margin:0; font-size:.9rem; max-height:360px; overflow:auto; border-top:1px solid var(--line); }
-  ol.log li { padding:6px 0; border-bottom:1px solid var(--line); }
-  ol.log b { display:inline-block; min-width:110px; color:var(--muted); font-weight:500; }
-  .booking { background:#e6f4ea; border-radius:8px; padding:12px; margin-bottom:16px; }
+  /* NHS components set their own display, which would override the hidden attribute the script toggles. */
+  [hidden] { display: none !important; }
+  .qs-service-name { color: #fff; font-size: 1.25rem; font-weight: 600; text-decoration: none; }
+  .qs-service-name:hover { text-decoration: underline; }
+  .qs-service-name:focus { color: #212b32; }
+  .error { white-space: pre-line; }
+  .error:empty { display: none; }
+  .status { font-size: 1.5rem; font-weight: 600; line-height: 1.33; margin: 0 0 8px; }
+  .status.booked { color: #007f3b; }
+  .status.failed { color: #d5281b; }
+  .booking { border-left: 8px solid #007f3b; background: #e5f2eb; padding: 16px; margin: 0 0 24px; font-weight: 600; }
+  #controls input { width: 6em; height: 40px; padding: 4px; margin: 0 16px 24px 0; border: 2px solid #4c6272; font: inherit; vertical-align: top; }
+  #controls input:focus { outline: 4px solid #ffeb3b; box-shadow: inset 0 0 0 2px #212b32; }
+  ol.log { list-style: none; padding: 0; margin: 0; font-size: 1rem; max-height: 360px; overflow: auto; border-top: 1px solid #d8dde0; }
+  ol.log li { padding: 8px 0; margin: 0; border-bottom: 1px solid #d8dde0; }
+  ol.log b { display: inline-block; min-width: 110px; color: #4c6272; font-weight: 400; }
 </style>
 </head>
 <body>
-<main>
-  <h1>QueueSkip GP</h1>
-  <p class="lede">Give us your details once. We wait in your surgery's phone queue and ask the receptionist to book you in, then text you the appointment.</p>
+<a class="nhsuk-skip-link" href="#maincontent">Skip to main content</a>
 
-  <div class="warn">Not for emergencies. If it's urgent, call <strong>999</strong> or <strong>111</strong>.</div>
+<header class="nhsuk-header" role="banner">
+  <div class="nhsuk-header__container nhsuk-width-container">
+    <div class="nhsuk-header__service">
+      <a class="qs-service-name" href="/">QueueSkip GP</a>
+    </div>
+  </div>
+</header>
+
+<div class="nhsuk-width-container">
+<main class="nhsuk-main-wrapper" id="maincontent" role="main">
+<div class="nhsuk-grid-row">
+<div class="nhsuk-grid-column-two-thirds">
+
+  <h1 class="nhsuk-heading-l">Book a GP appointment without waiting on the phone</h1>
+  <p class="nhsuk-lede-text">Give us your details once. We wait in your surgery's phone queue and ask the receptionist to book you in, then text you the appointment.</p>
+
+  <div class="nhsuk-warning-callout">
+    <h2 class="nhsuk-warning-callout__label"><span role="text"><span class="nhsuk-u-visually-hidden">Important: </span>Not for emergencies</span></h2>
+    <p>If it's urgent, call <strong>999</strong> or <strong>111</strong>.</p>
+  </div>
 
   <form id="intake" novalidate>
-    <fieldset>
-      <legend>Your details</legend>
-      <label>Full name <input name="full_name" required autocomplete="name"></label>
-      <div class="row">
-        <label>Date of birth <input name="date_of_birth" required placeholder="14 March 1990"></label>
-        <label>NHS number <small>(optional)</small> <input name="nhs_number" inputmode="numeric" placeholder="485 777 3456"></label>
+    <fieldset class="nhsuk-fieldset">
+      <legend class="nhsuk-fieldset__legend nhsuk-fieldset__legend--m"><h2 class="nhsuk-fieldset__heading">Your details</h2></legend>
+      <div class="nhsuk-form-group">
+        <label class="nhsuk-label" for="f-full_name">Full name</label>
+        <input class="nhsuk-input" id="f-full_name" name="full_name" required autocomplete="name">
       </div>
-      <label>Address <input name="address" required autocomplete="street-address"></label>
-      <label>Your mobile <small>(for the confirmation text)</small> <input name="patient_phone" required type="tel" autocomplete="tel" placeholder="07700 900123"></label>
-    </fieldset>
-
-    <fieldset>
-      <legend>The appointment</legend>
-      <label>What is it for? <small>(the receptionist may ask)</small> <textarea name="reason" required placeholder="Persistent cough for three weeks"></textarea></label>
-      <label>When can you make it? <textarea name="availability" required placeholder="Weekday mornings, or any time Friday"></textarea></label>
-      <label>Preferred GP <small>(optional)</small> <input name="preferred_clinician" placeholder="Dr Placeholder"></label>
-    </fieldset>
-
-    <fieldset>
-      <legend>Your surgery</legend>
-      <div class="row">
-        <label>Surgery name <input name="surgery_name" required placeholder="Riverside Medical Centre"></label>
-        <label>Surgery phone <input name="surgery_phone" required type="tel" placeholder="0191 496 0000"></label>
+      <div class="nhsuk-form-group">
+        <label class="nhsuk-label" for="f-date_of_birth">Date of birth</label>
+        <input class="nhsuk-input nhsuk-input--width-10" id="f-date_of_birth" name="date_of_birth" type="date" min="1900-01-01" required autocomplete="bday">
+      </div>
+      <div class="nhsuk-form-group">
+        <label class="nhsuk-label" for="f-nhs_number">NHS number (optional)</label>
+        <div class="nhsuk-hint" id="f-nhs_number-hint">This is a 10 digit number, like 485 777 3456</div>
+        <input class="nhsuk-input nhsuk-input--width-10" id="f-nhs_number" name="nhs_number" inputmode="numeric" aria-describedby="f-nhs_number-hint">
+      </div>
+      <div class="nhsuk-form-group">
+        <label class="nhsuk-label" for="f-address">Address</label>
+        <input class="nhsuk-input" id="f-address" name="address" required autocomplete="street-address">
+      </div>
+      <div class="nhsuk-form-group">
+        <label class="nhsuk-label" for="f-patient_phone">Your mobile</label>
+        <div class="nhsuk-hint" id="f-patient_phone-hint">We'll text the confirmation here, for example 07700 900123</div>
+        <input class="nhsuk-input nhsuk-input--width-20" id="f-patient_phone" name="patient_phone" required type="tel" autocomplete="tel" aria-describedby="f-patient_phone-hint">
       </div>
     </fieldset>
 
-    <label class="check"><input type="checkbox" name="allow_patient_callback" checked> If the receptionist needs to talk to me, ring me and connect me to the call.</label>
-    <label class="check"><input type="checkbox" name="consent" required> I agree to an automated assistant sharing these details with my GP surgery on my behalf.</label>
+    <fieldset class="nhsuk-fieldset">
+      <legend class="nhsuk-fieldset__legend nhsuk-fieldset__legend--m"><h2 class="nhsuk-fieldset__heading">The appointment</h2></legend>
+      <div class="nhsuk-form-group">
+        <label class="nhsuk-label" for="f-reason">What is it for?</label>
+        <div class="nhsuk-hint" id="f-reason-hint">The receptionist may ask. For example, persistent cough for three weeks</div>
+        <textarea class="nhsuk-textarea" id="f-reason" name="reason" rows="3" required aria-describedby="f-reason-hint"></textarea>
+      </div>
+      <div class="nhsuk-form-group">
+        <label class="nhsuk-label" for="f-availability">When can you make it?</label>
+        <div class="nhsuk-hint" id="f-availability-hint">For example, weekday mornings, or any time Friday</div>
+        <textarea class="nhsuk-textarea" id="f-availability" name="availability" rows="3" required aria-describedby="f-availability-hint"></textarea>
+      </div>
+      <div class="nhsuk-form-group">
+        <label class="nhsuk-label" for="f-preferred_clinician">Preferred GP (optional)</label>
+        <input class="nhsuk-input" id="f-preferred_clinician" name="preferred_clinician">
+      </div>
+    </fieldset>
 
-    <p><button type="submit">Join the queue for me</button></p>
-    <div class="error" id="error" role="alert"></div>
+    <fieldset class="nhsuk-fieldset">
+      <legend class="nhsuk-fieldset__legend nhsuk-fieldset__legend--m"><h2 class="nhsuk-fieldset__heading">Your surgery</h2></legend>
+      <div class="nhsuk-form-group">
+        <label class="nhsuk-label" for="f-surgery_name">Surgery name</label>
+        <div class="nhsuk-hint" id="f-surgery_name-hint">For example, Riverside Medical Centre</div>
+        <input class="nhsuk-input" id="f-surgery_name" name="surgery_name" required aria-describedby="f-surgery_name-hint">
+      </div>
+      <div class="nhsuk-form-group">
+        <label class="nhsuk-label" for="f-surgery_phone">Surgery phone</label>
+        <div class="nhsuk-hint" id="f-surgery_phone-hint">For example, 0191 496 0000</div>
+        <input class="nhsuk-input nhsuk-input--width-20" id="f-surgery_phone" name="surgery_phone" required type="tel" aria-describedby="f-surgery_phone-hint">
+      </div>
+    </fieldset>
+
+    <div class="nhsuk-form-group">
+      <div class="nhsuk-checkboxes">
+        <div class="nhsuk-checkboxes__item">
+          <input class="nhsuk-checkboxes__input" id="f-allow_patient_callback" type="checkbox" name="allow_patient_callback" checked>
+          <label class="nhsuk-label nhsuk-checkboxes__label" for="f-allow_patient_callback">If the receptionist needs to talk to me, ring me and connect me to the call.</label>
+        </div>
+        <div class="nhsuk-checkboxes__item">
+          <input class="nhsuk-checkboxes__input" id="f-consent" type="checkbox" name="consent" required>
+          <label class="nhsuk-label nhsuk-checkboxes__label" for="f-consent">I agree to an automated assistant sharing these details with my GP surgery on my behalf.</label>
+        </div>
+      </div>
+    </div>
+
+    <p class="nhsuk-error-message error" id="error" role="alert"></p>
+    <button class="nhsuk-button" type="submit">Join the queue for me</button>
   </form>
 
-  <section class="card" id="tracker" hidden>
-    <div class="status" id="status">Dialling…</div>
-    <div class="meta" id="meta"></div>
-    <div class="booking" id="booking" hidden></div>
-    <div class="controls" id="controls">
-      <button class="secondary" data-action="takeover">Receptionist answered</button>
-      <button class="secondary" data-action="digits">Press a key…</button>
-      <button class="secondary" data-action="cancel">Cancel call</button>
+  <section class="nhsuk-card" id="tracker" hidden>
+    <div class="nhsuk-card__content">
+      <div class="status" id="status">Dialling…</div>
+      <p class="nhsuk-body-s nhsuk-u-secondary-text-colour" id="meta"></p>
+      <div class="booking" id="booking" hidden></div>
+      <div class="nhsuk-button-group" id="controls">
+        <button class="nhsuk-button nhsuk-button--secondary" type="button" data-action="takeover">Receptionist answered</button>
+        <button class="nhsuk-button nhsuk-button--secondary" type="button" data-action="digits">Press a key…</button>
+        <button class="nhsuk-button nhsuk-button--secondary" type="button" data-action="cancel">Cancel call</button>
+      </div>
+      <ol class="log" id="log"></ol>
     </div>
-    <ol class="log" id="log"></ol>
   </section>
+
+</div>
+</div>
 </main>
+</div>
+
+<footer class="nhsuk-footer" role="contentinfo">
+  <div class="nhsuk-width-container">
+    <div class="nhsuk-footer__meta">
+      <p class="nhsuk-body-s">QueueSkip GP is an independent prototype. It is not an NHS service.</p>
+    </div>
+  </div>
+</footer>
 
 <script>
 const form = document.getElementById('intake');
 const errorBox = document.getElementById('error');
 let callId = null, timer = null;
+form.date_of_birth.max = new Date().toISOString().slice(0, 10);
+
+// The date picker gives "1990-03-14"; the voice agent reads this out, so send "14 March 1990".
+function spokenDate(iso) {
+  const [y, m, d] = iso.split('-').map(Number);
+  if (!y || !m || !d) return iso;
+  return new Date(y, m - 1, d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+}
 
 const LABELS = {
   dialling: 'Dialling the surgery…', on_hold: 'Waiting in the queue', talking_to_receptionist: 'Talking to the receptionist',
@@ -106,6 +176,7 @@ form.addEventListener('submit', async (e) => {
   const data = Object.fromEntries(new FormData(form));
   data.allow_patient_callback = form.allow_patient_callback.checked;
   data.consent = form.consent.checked;
+  data.date_of_birth = spokenDate(data.date_of_birth);
   const res = await fetch('/api/calls', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
   const body = await res.json();
   if (!res.ok) {

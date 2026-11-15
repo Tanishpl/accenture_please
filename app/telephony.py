@@ -48,6 +48,7 @@ def _url(path: str) -> str:
 
 def speak(parent: VoiceResponse | Gather, text: str) -> None:
     """ElevenLabs audio if configured, otherwise Twilio's built-in Polly voice."""
+    text = voice.strip_tone_tags(text)
     if settings.elevenlabs_api_key:
         parent.play(voice.clip_url(text))
     else:

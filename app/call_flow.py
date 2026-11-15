@@ -107,6 +107,8 @@ async def _agent_turn(session: CallSession, text: str) -> str:
     agent: ReceptionistAgent = session.agent
     reply: Reply = await agent.reply(text, session.turns_left())
     reply.say = strip_tone_tags(reply.say)
+    if reply.outcome:
+        reply.outcome = strip_tone_tags(reply.outcome)
     if reply.error:
         session.log("system", f"Agent couldn't reply: {reply.error}")
     session.log("agent", reply.say if settings.show_transcripts else "agent reply generated")
@@ -134,11 +136,11 @@ async def _agent_turn(session: CallSession, text: str) -> str:
 
 def record_booking(session: CallSession, data: dict) -> None:
     session.booking = b = Booking(
-        date=str(data.get("date", "")),
-        time=str(data.get("time", "")),
-        clinician=str(data.get("clinician", "")),
-        location=str(data.get("location", "")),
-        notes=str(data.get("notes", "")),
+        date=strip_tone_tags(str(data.get("date", ""))),
+        time=strip_tone_tags(str(data.get("time", ""))),
+        clinician=strip_tone_tags(str(data.get("clinician", ""))),
+        location=strip_tone_tags(str(data.get("location", ""))),
+        notes=strip_tone_tags(str(data.get("notes", ""))),
     )
     session.status = CallStatus.BOOKED
     session.outcome = "Appointment booked."

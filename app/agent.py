@@ -22,7 +22,7 @@ import websockets
 
 from .config import settings
 from .models import PatientRequest
-from .voice import strip_tone_tags
+from .voice import ToneTagStream, strip_tone_tags
 
 log = logging.getLogger(__name__)
 
@@ -172,6 +172,7 @@ class ReceptionistAgent:
 
         reply = self._partial = Reply(say="")
         said: list[str] = []
+        stream = ToneTagStream()
         waiting_for_text = True  # until the agent speaks after its latest tool call
         while True:
             try:
@@ -182,12 +183,12 @@ class ReceptionistAgent:
             except TimeoutError:
                 break  # nothing more for this turn
 
-            if msg["type"] == "agent_response":
-                text = strip_tone_tags(msg["agent_response_event"]["agent_response"].strip())
+            if msg["type"] in {"agent_response", "agent_response_correction"}:
+                text = stream.feed(self._response_text(msg))
                 if reply.next != "listen" and said:
                     break  # narration after hang_up / connect_patient: don't speak it
                 if text:
-                    said.append(text)
+                    self._append_reply_text(said, text)
                     reply.say = " ".join(said)
                 if reply.next != "listen":
                     break
@@ -207,14 +208,47 @@ class ReceptionistAgent:
             if name in FINAL_TOOLS and said:
                 break
             waiting_for_text = True
+        tail = stream.flush()
+        if tail:
+            self._append_reply_text(said, tail)
+            reply.say = " ".join(said)
         return reply
+
+    @staticmethod
+    def _response_text(msg: dict) -> str:
+        event = msg.get("agent_response_event") or msg.get("agent_response_correction_event") or {}
+        return str(
+            event.get("agent_response")
+            or event.get("corrected_agent_response")
+            or event.get("agent_response_correction")
+            or ""
+        )
+
+    @staticmethod
+    def _append_reply_text(parts: list[str], text: str) -> None:
+        text = text.strip()
+        if not text:
+            return
+        if not parts:
+            parts.append(text)
+            return
+        previous = parts[-1]
+        if previous.endswith((".", "!", "?", ";", ":")) or (
+            previous[-1:].isalnum() and text[0].isupper()
+        ):
+            parts.append(text)
+        else:
+            parts[-1] = previous + text
 
     @staticmethod
     def _apply_tool(reply: Reply, name: str, params: dict) -> None:
         if name == "record_booking":
-            reply.booking = {k: str(params.get(k, "")) for k in ("date", "time", "clinician", "location", "notes")}
+            reply.booking = {
+                k: strip_tone_tags(str(params.get(k, "")))
+                for k in ("date", "time", "clinician", "location", "notes")
+            }
         elif name == "report_outcome":
-            reply.outcome = str(params.get("summary", ""))
+            reply.outcome = strip_tone_tags(str(params.get("summary", "")))
         elif name == "connect_patient":
             reply.next = "connect_patient"
         elif name == "hang_up":

@@ -185,12 +185,39 @@ async def test_closed_sms_uses_fixed_reason(monkeypatch):
 
 
 def test_strip_tone_tags_preserves_ordinary_brackets():
-    assert voice.strip_tone_tags("[happy] Hello [laughs] there [very happy] friend [whispers]") == (
+    assert voice.strip_tone_tags("[polite] Hello [happy] there [short pause] friend [whispers]") == (
         "Hello there friend"
     )
-    assert voice.strip_tone_tags("Use [section one] and [NHS] as ordinary text.") == (
-        "Use [section one] and [NHS] as ordinary text."
+    assert voice.strip_tone_tags("(smiling) Hello. *warmly* Welcome.") == (
+        "Hello. Welcome."
     )
+    assert voice.strip_tone_tags("Use [section 1] and [this is ordinary bracketed text] as text.") == (
+        "Use [section 1] and [this is ordinary bracketed text] as text."
+    )
+
+
+def test_tone_tag_stream_removes_split_tags():
+    stream = voice.ToneTagStream()
+    assert stream.feed("Hello [pol") == "Hello"
+    assert stream.feed("ite] [happy] world") == "world"
+    assert stream.flush() == ""
+
+
+def test_tts_text_has_no_tone_tags(monkeypatch):
+    from dataclasses import replace
+
+    spoken = []
+
+    class Parent:
+        def play(self, url):
+            spoken.append(url)
+
+    monkeypatch.setattr(telephony, "settings", replace(telephony.settings, elevenlabs_api_key="fake"))
+    monkeypatch.setattr(telephony.voice, "clip_url", lambda text: spoken.append(text) or "audio-url")
+
+    telephony.speak(Parent(), "[polite] Hello [happy] there")
+
+    assert spoken == ["Hello there", "audio-url"]
 
 
 def test_tts_clip_ids_are_randomly_mapped_and_expire(monkeypatch):
@@ -527,3 +554,10 @@ async def test_turn_without_connection_falls_back():
     a._ready.set()
     r = await a.reply("Hello?", turns_left=3)
     assert r.say == agent.FALLBACK_SAY and "closed" in r.error
+
+
+@pytest.mark.asyncio
+async def test_streamed_agent_tags_are_removed():
+    a = connected_agent([say("[pol"), say("ite] Hello [happy] there")])
+    r = await a.reply("Hello?", turns_left=3)
+    assert r.say == "Hello there"

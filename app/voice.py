@@ -26,16 +26,47 @@ TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
 MAX_CLIPS = 200
 CLIP_RETAIN_SECONDS = 600
 _TONE_TAG_RE = re.compile(
-    r"\[(?:very\s+)?(?:happy|sad|laughs?|laughing|whispers?|whispering|"
-    r"shouts?|shouting|excited|angry|softly|quietly|sighs?|chuckles?|"
-    r"hesitates?|breathes?|cheerful|warmly)\]",
+    r"\[(?:[A-Za-z]+(?:[ '-]+[A-Za-z]+){0,2})\]",
+    re.IGNORECASE,
+)
+_STAGE_DIRECTION_RE = re.compile(
+    r"(^|[.!?]\s+)[ \t]*(?:\((?:[A-Za-z]+(?:[ '-]+[A-Za-z]+){0,2})\)"
+    r"|\*(?:[A-Za-z]+(?:[ '-]+[A-Za-z]+){0,2})\*)",
     re.IGNORECASE,
 )
 
 
+def _tidy(text: str) -> str:
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
+
 def strip_tone_tags(text: str) -> str:
-    """Remove common short stage-direction tags without changing ordinary brackets."""
-    return re.sub(r"\s{2,}", " ", _TONE_TAG_RE.sub("", text)).strip()
+    """Remove short tone tags while preserving numeric and long bracketed text."""
+    text = _TONE_TAG_RE.sub("", text)
+    text = _STAGE_DIRECTION_RE.sub(r"\1", text)
+    return _tidy(text)
+
+
+class ToneTagStream:
+    """Buffer an incomplete square-bracket tag while streamed text arrives."""
+
+    def __init__(self) -> None:
+        self._pending = ""
+
+    def feed(self, text: str) -> str:
+        self._pending += text
+        opening = self._pending.rfind("[")
+        closing = self._pending.rfind("]")
+        if opening > closing:
+            complete = self._pending[:opening]
+            self._pending = self._pending[opening:]
+        else:
+            complete, self._pending = self._pending, ""
+        return strip_tone_tags(complete)
+
+    def flush(self) -> str:
+        pending, self._pending = self._pending, ""
+        return strip_tone_tags(pending)
 
 
 class Clip:

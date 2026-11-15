@@ -131,7 +131,8 @@ receptionist) through Twilio and hold the same conversation as the simulated cal
 Setup:
 1. Put `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` and `TWILIO_PHONE_NUMBER` in `.env`
    (gitignored), or enter them on the page. Values entered on the page are kept in memory
-   only and never written to disk.
+   only and never written to disk. Optionally set `CALL_TO_NUMBER` to pre-fill the number
+   to ring.
 2. On a trial account, the number you call must be a **verified caller ID** in the Twilio
    console. The callee first hears Twilio's trial message and must press a key; then the
    agent speaks.

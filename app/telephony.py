@@ -55,6 +55,7 @@ class PhoneConfig:
     auth_token: str = ""
     from_number: str = ""
     public_url: str = ""
+    default_to: str = ""
     tunnel: str = "none"
 
     @classmethod
@@ -69,6 +70,7 @@ class PhoneConfig:
             auth_token=get("TWILIO_AUTH_TOKEN"),
             from_number=get("TWILIO_PHONE_NUMBER"),
             public_url=get("PUBLIC_URL").rstrip("/"),
+            default_to=get("CALL_TO_NUMBER"),
             tunnel="PUBLIC_URL" if get("PUBLIC_URL") else "none",
         )
 
@@ -108,6 +110,7 @@ def status() -> dict:
         "configured": CONFIG.configured,
         "account_sid_hint": f"AC…{sid[-4:]}" if sid else None,
         "from_number": CONFIG.from_number or None,
+        "default_to": CONFIG.default_to or None,
         "public_url": CONFIG.public_url or None,
         "tunnel": CONFIG.tunnel,
         "tts": speech.local_tts_available(),

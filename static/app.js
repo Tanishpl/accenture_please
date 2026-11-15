@@ -718,7 +718,7 @@ function initPatient() {
         return;
       }
 
-      const to = h("input.input.width-20", { id: "call-to", type: "tel", autocomplete: "tel" });
+      const to = h("input.input.width-20", { id: "call-to", type: "tel", autocomplete: "tel", value: cfg.default_to || "" });
       const toError = h("span.error-message", { hidden: true });
       const status = h("p.call-status", { "aria-live": "polite" });
       const liveArea = h("div");

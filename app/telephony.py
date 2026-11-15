@@ -30,6 +30,12 @@ HOLD_HINTS = "press, appointments, reception, surgery, speaking, good morning, g
 STILL_THERE = "Sorry, are you still there?"
 GIVE_UP = "Sorry, I'll have to try again later. Goodbye."
 POLLY_VOICE = "Polly.Amy"
+DESTINATION_ERROR = "Destination is not allowed while TEST_MODE is enabled."
+
+
+def _check_destination(number: str) -> None:
+    if settings.test_mode and number not in settings.allowed_destinations:
+        raise ValueError(DESTINATION_ERROR)
 
 
 def _client() -> Client:
@@ -124,6 +130,8 @@ def twiml_conference(session_id: str, *, starts_conference: bool, intro: str = "
 # ---------- REST actions ----------
 
 async def place_call(session_id: str, to_number: str) -> str:
+    _check_destination(to_number)
+
     def _create() -> str:
         call = _client().calls.create(
             to=to_number,
@@ -152,6 +160,7 @@ async def hang_up(call_sid: str) -> None:
 
 async def call_patient(session_id: str, patient_phone: str) -> None:
     """Ring the patient; their TwiML (/twiml/patient/{id}) joins them to the conference."""
+    _check_destination(patient_phone)
     await asyncio.to_thread(
         lambda: _client().calls.create(
             to=patient_phone, from_=settings.twilio_phone_number, url=_url(f"/twiml/patient/{session_id}")
@@ -160,6 +169,7 @@ async def call_patient(session_id: str, patient_phone: str) -> None:
 
 
 async def send_sms(to: str, body: str) -> None:
+    _check_destination(to)
     if not settings.twilio_phone_number:
         return
     try:

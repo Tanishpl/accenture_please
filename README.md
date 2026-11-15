@@ -75,6 +75,12 @@ ngrok http 8000                 # put the https URL in PUBLIC_URL
 Open the ngrok URL, fill in the form, and use a teammate's phone number as
 the "surgery". Tests: `.venv/bin/python -m pytest`.
 
+Set `APP_API_KEY` and enter the same key in the form. `TEST_MODE=true` (the
+default) allows calls and SMS only to the E.164 numbers in
+`ALLOWED_DESTINATIONS`; keep this enabled while testing. New calls are limited
+by `MAX_CALLS_PER_HOUR` (default 3). Set `TWILIO_VALIDATE_SIGNATURES=true` to
+validate Twilio webhook signatures.
+
 You need:
 - **Twilio**: a trial account is fine. The surgery and patient numbers must be
   verified caller IDs on the account.

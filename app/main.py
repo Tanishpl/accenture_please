@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+import hmac
 import logging
 import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from time import time
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -18,6 +21,9 @@ from .models import CallSession, CallStatus, PatientRequest
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
+logging.getLogger("twilio.http_client").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+_call_starts: deque[float] = deque()
 
 
 @asynccontextmanager
@@ -78,6 +84,39 @@ def _session(session_id: str) -> CallSession:
     return session
 
 
+def _require_api_key(request: Request) -> None:
+    configured = settings.app_api_key
+    supplied = request.headers.get("X-API-Key", "")
+    if not configured or not hmac.compare_digest(supplied, configured):
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+
+
+def _check_call_rate_limit() -> None:
+    now = time()
+    while _call_starts and now - _call_starts[0] >= 3600:
+        _call_starts.popleft()
+    if settings.max_calls_per_hour > 0 and len(_call_starts) >= settings.max_calls_per_hour:
+        raise HTTPException(status_code=429, detail="Call limit reached; try again later")
+    _call_starts.append(now)
+
+
+async def _require_twilio_signature(request: Request, form=None) -> None:
+    if not settings.twilio_validate_signatures:
+        return
+    from twilio.request_validator import RequestValidator
+
+    signature = request.headers.get("X-Twilio-Signature", "")
+    if not signature:
+        raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+    if form is None:
+        form = await request.form()
+    url = f"{settings.public_url}{request.url.path}"
+    if request.url.query:
+        url += f"?{request.url.query}"
+    if not RequestValidator(settings.twilio_auth_token).validate(url, dict(form), signature):
+        raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+
+
 @app.get("/")
 async def index() -> FileResponse:
     return FileResponse(STATIC / "index.html")
@@ -86,13 +125,15 @@ async def index() -> FileResponse:
 # ---------- Patient-facing API ----------
 
 @app.post("/api/calls")
-async def start_call(patient: PatientRequest) -> dict:
+async def start_call(patient: PatientRequest, request: Request) -> dict:
+    _require_api_key(request)
     if EMERGENCY.search(patient.reason):
         raise HTTPException(
             status_code=422,
             detail="This sounds like it could be an emergency. Call 999 now, or 111 for urgent advice. "
             "We won't wait in a GP queue for this.",
         )
+    _check_call_rate_limit()
     session = CallSession(patient=patient)
     store.add(session)
     session.log("system", f"Dialling {patient.surgery_name}")
@@ -107,7 +148,8 @@ async def start_call(patient: PatientRequest) -> dict:
 
 
 @app.get("/api/calls/{session_id}")
-async def call_status(session_id: str) -> dict:
+async def call_status(session_id: str, request: Request) -> dict:
+    _require_api_key(request)
     return _session(session_id).public_view()
 
 
@@ -115,7 +157,8 @@ async def call_status(session_id: str) -> dict:
 # action is queued and happens on the next phrase Twilio hears.
 
 @app.post("/api/calls/{session_id}/takeover")
-async def manual_takeover(session_id: str) -> dict:
+async def manual_takeover(session_id: str, request: Request) -> dict:
+    _require_api_key(request)
     session = _session(session_id)
     if session.phase not in {"dialling", "hold"}:
         return {"ok": True}
@@ -129,7 +172,8 @@ async def manual_takeover(session_id: str) -> dict:
 
 
 @app.post("/api/calls/{session_id}/digits/{digits}")
-async def manual_digits(session_id: str, digits: str) -> dict:
+async def manual_digits(session_id: str, digits: str, request: Request) -> dict:
+    _require_api_key(request)
     if not re.fullmatch(r"[0-9*#]{1,6}", digits):
         raise HTTPException(status_code=400, detail="Digits must be 0-9, * or #")
     session = _session(session_id)
@@ -145,7 +189,8 @@ async def manual_digits(session_id: str, digits: str) -> dict:
 
 
 @app.post("/api/calls/{session_id}/cancel")
-async def cancel(session_id: str) -> dict:
+async def cancel(session_id: str, request: Request) -> dict:
+    _require_api_key(request)
     session = _session(session_id)
     was_live = session.phase != "done"
     session.phase = "done"  # the next callback hangs up, even if the REST hang-up is refused
@@ -158,10 +203,10 @@ async def cancel(session_id: str) -> dict:
 
 
 # ---------- Twilio webhooks ----------
-# TODO before real use: validate X-Twilio-Signature (twilio.request_validator).
 
 @app.post("/twiml/start/{session_id}")
-async def twiml_start(session_id: str) -> Response:
+async def twiml_start(session_id: str, request: Request) -> Response:
+    await _require_twilio_signature(request)
     session = store.get(session_id)
     if session is None or session.phase == "done":
         return _twiml(telephony.twiml_hangup())
@@ -169,8 +214,9 @@ async def twiml_start(session_id: str) -> Response:
 
 
 @app.post("/twiml/hold/{session_id}")
-async def twiml_hold(session_id: str) -> Response:
+async def twiml_hold(session_id: str, request: Request) -> Response:
     """Reached only after ~10 minutes of silence on hold."""
+    await _require_twilio_signature(request)
     session = store.get(session_id)
     if session is None or session.phase == "done":
         return _twiml(telephony.twiml_hangup())
@@ -184,12 +230,14 @@ async def twiml_heard(session_id: str, request: Request) -> Response:
     if session is None:
         return _twiml(telephony.twiml_hangup())
     form = await request.form()
+    await _require_twilio_signature(request, form)
     text = str(form.get("SpeechResult", ""))
     return _twiml(await call_flow.heard(session, text))
 
 
 @app.post("/twiml/takeover/{session_id}")
-async def twiml_takeover(session_id: str) -> Response:
+async def twiml_takeover(session_id: str, request: Request) -> Response:
+    await _require_twilio_signature(request)
     session = store.get(session_id)
     if session is None or session.phase == "done":
         return _twiml(telephony.twiml_hangup())
@@ -199,7 +247,8 @@ async def twiml_takeover(session_id: str) -> Response:
 
 
 @app.post("/twiml/digits/{session_id}/{digits}")
-async def twiml_digits(session_id: str, digits: str) -> Response:
+async def twiml_digits(session_id: str, digits: str, request: Request) -> Response:
+    await _require_twilio_signature(request)
     session = store.get(session_id)
     if session is None or session.phase == "done":
         return _twiml(telephony.twiml_hangup())
@@ -207,7 +256,8 @@ async def twiml_digits(session_id: str, digits: str) -> Response:
 
 
 @app.post("/twiml/patient/{session_id}")
-async def twiml_patient(session_id: str) -> Response:
+async def twiml_patient(session_id: str, request: Request) -> Response:
+    await _require_twilio_signature(request)
     session = _session(session_id)
     return _twiml(telephony.twiml_conference(
         session_id,
@@ -220,6 +270,7 @@ async def twiml_patient(session_id: str) -> Response:
 @app.post("/twilio/status/{session_id}")
 async def twilio_status(session_id: str, request: Request) -> Response:
     form = await request.form()
+    await _require_twilio_signature(request, form)
     session = store.get(session_id)
     status = str(form.get("CallStatus", ""))
     if session:

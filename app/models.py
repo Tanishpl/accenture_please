@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
+import secrets
 import time
-import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -103,7 +103,7 @@ class Booking:
 @dataclass
 class CallSession:
     patient: PatientRequest
-    id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    id: str = field(default_factory=lambda: secrets.token_urlsafe(16))
     call_sid: str | None = None
     status: CallStatus = CallStatus.DIALLING
     created_at: float = field(default_factory=time.time)

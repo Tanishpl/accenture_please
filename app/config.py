@@ -35,6 +35,16 @@ class Settings:
     gemini_model: str = _get("GEMINI_MODEL", "gemini-3.8-flash")
     show_transcripts: bool = _get("SHOW_TRANSCRIPTS", "false").lower() in {"1", "true", "yes", "on"}
 
+    test_mode: bool = _get("TEST_MODE", "true").lower() in {"1", "true", "yes", "on"}
+    allowed_destinations: frozenset[str] = frozenset(
+        item for item in (part.strip() for part in _get("ALLOWED_DESTINATIONS").split(",")) if item
+    )
+    app_api_key: str = _get("APP_API_KEY")
+    max_calls_per_hour: int = int(_get("MAX_CALLS_PER_HOUR", "3"))
+    twilio_validate_signatures: bool = _get("TWILIO_VALIDATE_SIGNATURES", "false").lower() in {
+        "1", "true", "yes", "on"
+    }
+
     # Twilio trial accounts end the call after this many <Gather>/<Redirect>
     # callbacks. Every phrase heard counts as one. Set to 0 on a paid account.
     max_hops: int = int(_get("MAX_HOPS", "10"))

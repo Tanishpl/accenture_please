@@ -8,6 +8,10 @@ os.environ["GEMINI_API_KEY"] = ""
 os.environ["ELEVENLABS_API_KEY"] = ""  # Polly <Say>, so TwiML can be built without an event loop
 os.environ["ELEVENLABS_AGENT_ID"] = "agent_test"
 os.environ["MAX_HOPS"] = "10"
+os.environ["TEST_MODE"] = "true"
+os.environ["ALLOWED_DESTINATIONS"] = "+441914960000,+447700900123"
+os.environ["APP_API_KEY"] = "test-key"
+os.environ["MAX_CALLS_PER_HOUR"] = "100"
 
 import pytest
 from fastapi.testclient import TestClient
@@ -22,6 +26,7 @@ PATIENT = dict(
     availability="Weekday mornings", surgery_name="Riverside Surgery", surgery_phone="0191 496 0000",
     consent=True,
 )
+API_HEADERS = {"X-API-Key": "test-key"}
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +66,13 @@ def test_phone_normalisation():
     assert normalise_uk_phone("0044 191 496 0000") == "+441914960000"
     with pytest.raises(ValueError):
         normalise_uk_phone("hello")
+
+
+def test_session_ids_have_at_least_16_bytes_of_entropy():
+    first = CallSession(patient=PatientRequest(**PATIENT))
+    second = CallSession(patient=PatientRequest(**PATIENT))
+    assert len(first.id) >= 22
+    assert first.id != second.id
 
 
 def test_menu_digit():
@@ -347,17 +359,62 @@ def test_twiml_uses_only_trial_safe_verbs():
 
 def test_intake_and_emergency():
     client = TestClient(main.app)
-    r = client.post("/api/calls", json=PATIENT)
+    r = client.post("/api/calls", json=PATIENT, headers=API_HEADERS)
     assert r.status_code == 200
-    status = client.get(f"/api/calls/{r.json()['id']}").json()
+    status = client.get(f"/api/calls/{r.json()['id']}", headers=API_HEADERS).json()
     assert status["status"] == "dialling"
     assert "Alex" not in str(status)  # no personal data on the status API
 
-    r = client.post("/api/calls", json={**PATIENT, "reason": "crushing chest pain"})
+    r = client.post("/api/calls", json={**PATIENT, "reason": "crushing chest pain"}, headers=API_HEADERS)
     assert r.status_code == 422 and "999" in r.json()["detail"]
 
-    r = client.post("/api/calls", json={**PATIENT, "consent": False})
+    r = client.post("/api/calls", json={**PATIENT, "consent": False}, headers=API_HEADERS)
     assert r.status_code == 422
+
+
+def test_patient_api_requires_api_key():
+    client = TestClient(main.app)
+    assert client.post("/api/calls", json=PATIENT).status_code == 401
+    assert client.get("/api/calls/unknown").status_code == 401
+    assert client.post("/api/calls/unknown/takeover").status_code == 401
+    assert client.post("/api/calls/unknown/digits/1").status_code == 401
+    assert client.post("/api/calls/unknown/cancel").status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_test_mode_rejects_unlisted_destinations(monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        telephony,
+        "settings",
+        replace(telephony.settings, test_mode=True, allowed_destinations=frozenset()),
+    )
+    with pytest.raises(ValueError, match="Destination is not allowed"):
+        telephony._check_destination("+441234567890")
+
+
+def test_call_rate_limit(monkeypatch, offline):
+    from dataclasses import replace
+
+    monkeypatch.setattr(main, "settings", replace(main.settings, max_calls_per_hour=1))
+    main._call_starts.clear()
+    client = TestClient(main.app)
+    assert client.post("/api/calls", json=PATIENT, headers=API_HEADERS).status_code == 200
+    assert client.post("/api/calls", json=PATIENT, headers=API_HEADERS).status_code == 429
+    main._call_starts.clear()
+
+
+def test_twilio_signature_validation_rejects_missing_signature(monkeypatch):
+    from dataclasses import replace
+
+    monkeypatch.setattr(
+        main,
+        "settings",
+        replace(main.settings, twilio_validate_signatures=True, twilio_auth_token="fake-token"),
+    )
+    response = TestClient(main.app).post("/twiml/start/unknown-session")
+    assert response.status_code == 403
 
 
 def test_full_call_books_appointment(monkeypatch, offline):
@@ -371,7 +428,7 @@ def test_full_call_books_appointment(monkeypatch, offline):
         ),
     ])
     client = TestClient(main.app)
-    sid = client.post("/api/calls", json=PATIENT).json()["id"]
+    sid = client.post("/api/calls", json=PATIENT, headers=API_HEADERS).json()["id"]
 
     assert "<Gather" in client.post(f"/twiml/start/{sid}").text
     heard = lambda text: client.post(f"/twiml/heard/{sid}", data={"SpeechResult": text}).text
@@ -384,7 +441,7 @@ def test_full_call_books_appointment(monkeypatch, offline):
     bye = heard("I can do Tuesday at 10:40 with Dr Patel.")
     assert "goodbye" in bye and bye.endswith("<Hangup /></Response>")
 
-    status = client.get(f"/api/calls/{sid}").json()
+    status = client.get(f"/api/calls/{sid}", headers=API_HEADERS).json()
     assert status["status"] == "booked" and status["booking"]["time"] == "10:40am"
     assert status["turns_left"] == 10 - 1 - 5
     assert any("10:40am" in body for _, body in offline)

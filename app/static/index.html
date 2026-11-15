@@ -50,6 +50,11 @@
   </div>
 
   <form id="intake" novalidate>
+    <div class="nhsuk-form-group">
+      <label class="nhsuk-label" for="f-api-key">App API key</label>
+      <div class="nhsuk-hint" id="f-api-key-hint">This key is kept in memory only and is not saved by this page.</div>
+      <input class="nhsuk-input" id="f-api-key" type="password" autocomplete="off" aria-describedby="f-api-key-hint">
+    </div>
     <fieldset class="nhsuk-fieldset">
       <legend class="nhsuk-fieldset__legend nhsuk-fieldset__legend--m"><h2 class="nhsuk-fieldset__heading">Your details</h2></legend>
       <div class="nhsuk-form-group">
@@ -157,6 +162,13 @@
 const form = document.getElementById('intake');
 const errorBox = document.getElementById('error');
 let callId = null, timer = null;
+let apiKey = '';
+
+function apiHeaders(json = false) {
+  const headers = { 'X-API-Key': apiKey };
+  if (json) headers['Content-Type'] = 'application/json';
+  return headers;
+}
 
 const LABELS = {
   dialling: 'Dialling the surgery…', on_hold: 'Waiting in the queue', talking_to_receptionist: 'Talking to the receptionist',
@@ -166,10 +178,11 @@ const LABELS = {
 form.addEventListener('submit', async (e) => {
   e.preventDefault();
   errorBox.textContent = '';
+  apiKey = document.getElementById('f-api-key').value;
   const data = Object.fromEntries(new FormData(form));
   data.allow_patient_callback = form.allow_patient_callback.checked;
   data.consent = form.consent.checked;
-  const res = await fetch('/api/calls', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const res = await fetch('/api/calls', { method: 'POST', headers: apiHeaders(true), body: JSON.stringify(data) });
   const body = await res.json();
   if (!res.ok) {
     errorBox.textContent = Array.isArray(body.detail)
@@ -185,7 +198,7 @@ form.addEventListener('submit', async (e) => {
 });
 
 async function poll() {
-  const res = await fetch(`/api/calls/${callId}`);
+  const res = await fetch(`/api/calls/${callId}`, { headers: apiHeaders() });
   if (!res.ok) return;
   const s = await res.json();
   const status = document.getElementById('status');
@@ -221,12 +234,12 @@ document.getElementById('controls').addEventListener('click', async (e) => {
     btn.replaceWith(input); input.focus();
     input.addEventListener('keydown', async (k) => {
       if (k.key !== 'Enter') return;
-      if (input.value) await fetch(`/api/calls/${callId}/digits/${encodeURIComponent(input.value)}`, { method: 'POST' });
+      if (input.value) await fetch(`/api/calls/${callId}/digits/${encodeURIComponent(input.value)}`, { method: 'POST', headers: apiHeaders() });
       input.replaceWith(btn);
     });
     return;
   }
-  await fetch(`/api/calls/${callId}/${action}`, { method: 'POST' });
+  await fetch(`/api/calls/${callId}/${action}`, { method: 'POST', headers: apiHeaders() });
   poll();
 });
 </script>

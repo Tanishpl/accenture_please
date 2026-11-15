@@ -4,24 +4,28 @@ Two layers:
 1. Fast rules: catch the obvious recorded phrases ("you are number 5 in the
    queue") and anything we've already heard before. Recordings repeat; people
    don't.
-2. Claude: for everything else, especially "is this a live receptionist?" and
+2. Gemini: for everything else, especially "is this a live receptionist?" and
    "which key gets me to appointments?".
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from enum import Enum
+from typing import Literal
 
-import anthropic
+from google import genai
+from pydantic import BaseModel, ValidationError
 
 from .config import settings
 
 log = logging.getLogger(__name__)
+LLM_TIMEOUT_SECONDS = 2.5
 
 
 class Heard(str, Enum):
@@ -31,11 +35,26 @@ class Heard(str, Enum):
     CLOSED = "closed"        # "the surgery is now closed" / "lines are full, call back"
 
 
+VERDICT_REASONS = {
+    Heard.HOLD: "waiting in the queue",
+    Heard.IVR_MENU: "phone menu",
+    Heard.HUMAN: "a person answered",
+    Heard.CLOSED: "the surgery appears to be closed or its queue is full",
+}
+
+
 @dataclass
 class Verdict:
     heard: Heard
     digits: str | None = None
-    reason: str = ""
+    reason: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.reason = VERDICT_REASONS[self.heard]
+
+
+class GeminiVerdict(BaseModel):
+    label: Literal["hold", "ivr_menu", "human", "closed"]
 
 
 QUEUE_PATTERNS = [
@@ -61,9 +80,7 @@ class HoldClassifier:
         self.surgery_name = surgery_name
         self.reason = reason
         self.heard_before: list[str] = []
-        # Picks up ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an `ant auth login` profile.
-        # If none work we drop to keyword rules on the first failed request.
-        self._client: anthropic.AsyncAnthropic | None = anthropic.AsyncAnthropic()
+        self._client = genai.Client(api_key=settings.gemini_api_key).aio if settings.gemini_api_key else None
 
     def _is_repeat(self, text: str) -> bool:
         return any(SequenceMatcher(None, text.lower(), old.lower()).ratio() > 0.8 for old in self.heard_before)
@@ -71,33 +88,34 @@ class HoldClassifier:
     def quick_rules(self, text: str) -> Verdict | None:
         t = text.lower()
         if any(re.search(p, t) for p in CLOSED_PATTERNS):
-            return Verdict(Heard.CLOSED, reason="closed/queue-full message")
+            return Verdict(Heard.CLOSED)
         if self._is_repeat(text):
-            return Verdict(Heard.HOLD, reason="repeated message, so a recording")
+            return Verdict(Heard.HOLD)
         if any(re.search(p, t) for p in QUEUE_PATTERNS) and not MENU_PATTERN.search(t):
-            return Verdict(Heard.HOLD, reason="queue announcement")
+            return Verdict(Heard.HOLD)
         return None
 
     async def classify(self, text: str) -> Verdict:
         text = text.strip()
         if not text:
-            return Verdict(Heard.HOLD, reason="silence/music")
+            return Verdict(Heard.HOLD)
         verdict = self.quick_rules(text)
         if verdict is None:
-            verdict = await self._ask_claude(text) if self._client else self.keyword_rules(text)
+            llm_verdict = await self._ask_llm(text) if self._client else None
+            verdict = llm_verdict or self.keyword_rules(text)
         self.heard_before.append(text)
         return verdict
 
     def keyword_rules(self, text: str) -> Verdict:
-        """No Claude credentials: crude keyword guess (good enough for a demo)."""
+        """No Gemini credentials: crude keyword guess (good enough for a demo)."""
         menu = _menu_digit_for_appointments(text)
         if menu:
-            return Verdict(Heard.IVR_MENU, digits=menu, reason="keyword menu match")
+            return Verdict(Heard.IVR_MENU, digits=menu)
         if re.search(r"\b(speaking|how can i help|how may i help|can i help)\b", text, re.I):
-            return Verdict(Heard.HUMAN, reason="greeting keywords")
-        return Verdict(Heard.HOLD, reason="no rule matched")
+            return Verdict(Heard.HUMAN)
+        return Verdict(Heard.HOLD)
 
-    async def _ask_claude(self, text: str) -> Verdict:
+    async def _ask_llm(self, text: str) -> Verdict | None:
         previous = "\n".join(f"- {t}" for t in self.heard_before[-8:]) or "(nothing yet)"
         prompt = (
             f"We are an automated assistant phoning {self.surgery_name}, a UK NHS GP surgery, "
@@ -115,56 +133,31 @@ class HoldClassifier:
             "- closed: the surgery is closed or the queue is full and the call will not be answered"
         )
         try:
-            response = await self._client.beta.messages.create(
-                model=settings.anthropic_model,
-                max_tokens=1024,
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
-                output_config={
-                    "effort": "low",
-                    "format": {
-                        "type": "json_schema",
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "heard": {"type": "string", "enum": [h.value for h in Heard]},
-                                "digits": {"type": ["string", "null"]},
-                                "reason": {"type": "string"},
-                            },
-                            "required": ["heard", "digits", "reason"],
-                            "additionalProperties": False,
-                        },
+            response = await asyncio.wait_for(
+                self._client.models.generate_content(
+                    model=settings.gemini_model,
+                    contents=prompt,
+                    config={
+                        "response_mime_type": "application/json",
+                        "response_schema": GeminiVerdict,
                     },
-                },
-                messages=[{"role": "user", "content": prompt}],
+                ),
+                timeout=LLM_TIMEOUT_SECONDS,
             )
-        except anthropic.AuthenticationError:
-            log.warning("No valid Anthropic credentials; using keyword rules for this call")
-            self._client = None
-            return self.keyword_rules(text)
-        except anthropic.RateLimitError:
-            log.warning("Claude rate limited; using keyword fallback")
-            return self.keyword_rules(text)
-        except anthropic.APIStatusError as exc:
-            log.warning("Claude API error %s; using keyword fallback", exc.status_code)
-            return self.keyword_rules(text)
-        except anthropic.APIConnectionError:
-            log.warning("Claude unreachable; using keyword fallback")
-            return self.keyword_rules(text)
-        except (anthropic.AnthropicError, TypeError) as exc:  # TypeError: no credentials configured at all
-            log.warning("Claude unavailable (%s); using keyword rules for this call", exc)
-            self._client = None
-            return self.keyword_rules(text)
+        except asyncio.TimeoutError:
+            log.warning("Gemini classifier timed out; using keyword fallback")
+            return None
+        except Exception as exc:
+            log.warning("Gemini classifier unavailable (%s); using keyword fallback", type(exc).__name__)
+            return None
 
-        if response.stop_reason != "end_turn":
-            log.warning("Classifier stopped with %s; using keyword fallback", response.stop_reason)
-            return self.keyword_rules(text)
-        raw = next(b.text for b in response.content if b.type == "text")
-        data = json.loads(raw)
-        digits = data.get("digits")
-        if digits:
-            digits = re.sub(r"[^0-9*#]", "", digits.replace("star", "*").replace("hash", "#")) or None
-        return Verdict(Heard(data["heard"]), digits=digits, reason=data.get("reason", ""))
+        try:
+            parsed = GeminiVerdict.model_validate(response.parsed or json.loads(response.text or ""))
+        except (AttributeError, TypeError, ValueError, ValidationError, json.JSONDecodeError):
+            log.warning("Gemini classifier returned an unparseable result; using keyword fallback")
+            return None
+
+        return Verdict(Heard(parsed.label))
 
 
 def _menu_digit_for_appointments(text: str) -> str | None:

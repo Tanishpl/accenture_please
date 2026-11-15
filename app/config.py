@@ -29,8 +29,11 @@ class Settings:
     # Text-only ElevenLabs agent that writes the replies (scripts/setup_agent.py).
     elevenlabs_agent_id: str = _get("ELEVENLABS_AGENT_ID")
 
-    # Optional: Claude classifies what we hear on hold. Without a key, keyword rules are used.
-    anthropic_model: str = _get("ANTHROPIC_MODEL", "claude-opus-5-5")
+    # Optional: Gemini classifies what we hear on hold. Without a key, keyword rules are used.
+    gemini_api_key: str = _get("GEMINI_API_KEY")
+    # Current Gemini Flash model; override this when selecting another supported model.
+    gemini_model: str = _get("GEMINI_MODEL", "gemini-3.8-flash")
+    show_transcripts: bool = _get("SHOW_TRANSCRIPTS", "false").lower() in {"1", "true", "yes", "on"}
 
     # Twilio trial accounts end the call after this many <Gather>/<Redirect>
     # callbacks. Every phrase heard counts as one. Set to 0 on a paid account.

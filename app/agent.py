@@ -22,6 +22,7 @@ import websockets
 
 from .config import settings
 from .models import PatientRequest
+from .voice import strip_tone_tags
 
 log = logging.getLogger(__name__)
 
@@ -182,7 +183,7 @@ class ReceptionistAgent:
                 break  # nothing more for this turn
 
             if msg["type"] == "agent_response":
-                text = msg["agent_response_event"]["agent_response"].strip()
+                text = strip_tone_tags(msg["agent_response_event"]["agent_response"].strip())
                 if reply.next != "listen" and said:
                     break  # narration after hang_up / connect_patient: don't speak it
                 if text:

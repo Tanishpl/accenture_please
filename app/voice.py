@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from collections import OrderedDict
 from collections.abc import AsyncIterator
 
@@ -21,11 +22,22 @@ log = logging.getLogger(__name__)
 
 TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
 MAX_CLIPS = 200
+_TONE_TAG_RE = re.compile(
+    r"\[(?:very\s+)?(?:happy|sad|laughs?|laughing|whispers?|whispering|"
+    r"shouts?|shouting|excited|angry|softly|quietly|sighs?|chuckles?|"
+    r"hesitates?|breathes?|cheerful|warmly)\]",
+    re.IGNORECASE,
+)
+
+
+def strip_tone_tags(text: str) -> str:
+    """Remove common short stage-direction tags without changing ordinary brackets."""
+    return re.sub(r"\s{2,}", " ", _TONE_TAG_RE.sub("", text)).strip()
 
 
 class Clip:
     def __init__(self, text: str) -> None:
-        self.text = text
+        self.text = strip_tone_tags(text)
         self.chunks: list[bytes] = []
         self.done = False
         self.failed = False
@@ -81,6 +93,7 @@ _clips: OrderedDict[str, Clip] = OrderedDict()
 
 def clip_url(text: str) -> str:
     """Start synthesising `text` (if not already cached) and return its public URL."""
+    text = strip_tone_tags(text)
     clip_id = hashlib.sha1(f"{settings.elevenlabs_voice_id}:{text}".encode()).hexdigest()[:16]
     clip = _clips.get(clip_id)
     if clip is None or clip.failed:

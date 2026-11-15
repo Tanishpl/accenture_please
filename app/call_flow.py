@@ -2,7 +2,7 @@
 
 hold:  classify the phrase (queue message / IVR menu / closed / a person).
        A person -> the agent says its opening line, and we move to 'agent'.
-agent: Claude writes the reply; we record bookings and outcomes, and either
+agent: the ElevenLabs agent writes the reply; we record bookings and outcomes, and either
        keep listening, connect the patient, or hang up.
 
 Every function returns the TwiML Twilio should run next.
@@ -19,6 +19,7 @@ from .agent import ReceptionistAgent, Reply
 from .classifier import Heard, HoldClassifier
 from .config import settings
 from .models import TERMINAL, Booking, CallSession, CallStatus
+from .voice import strip_tone_tags
 
 log = logging.getLogger(__name__)
 
@@ -53,11 +54,11 @@ async def heard(session: CallSession, text: str) -> str:
 
 async def _hold_turn(session: CallSession, text: str) -> str:
     if session.takeover_requested:
-        session.log("heard", text)
+        session.log("heard", "manual takeover requested")
         return take_over(session, text, "manual override")
     if session.pending_digits:
         digits, session.pending_digits = session.pending_digits, None
-        session.log("heard", text)
+        session.log("heard", "pending phone menu action")
         return press_digits(session, digits)
 
     classifier: HoldClassifier = session.classifier
@@ -66,7 +67,7 @@ async def _hold_turn(session: CallSession, text: str) -> str:
     except Exception as exc:  # timeout or anything else: never fail the webhook mid-call
         log.warning("Hold classifier failed (%r); using keyword rules", exc)
         verdict = classifier.keyword_rules(text)
-    session.log("heard", f"[{verdict.heard.value}] {text}")
+    session.log("heard", f"[{verdict.heard.value}] {verdict.reason}")
 
     if verdict.heard == Heard.HUMAN:
         return take_over(session, text, verdict.reason)
@@ -93,18 +94,22 @@ def take_over(session: CallSession, heard_text: str, why: str) -> str:
     session.answered_at = time.time()
     session.log("system", f"Receptionist answered ({why}). Agent is talking.")
     session.agent = ReceptionistAgent(session.patient)
-    opener = session.agent.opener(heard_text)
+    opener = strip_tone_tags(session.agent.opener(heard_text))
     session.log("agent", opener)
     return telephony.twiml_reply(session.id, opener)
 
 
 async def _agent_turn(session: CallSession, text: str) -> str:
-    session.log("receptionist", text)
+    if settings.show_transcripts:
+        session.log("receptionist", text)
+    else:
+        session.log("receptionist", "receptionist turn received")
     agent: ReceptionistAgent = session.agent
     reply: Reply = await agent.reply(text, session.turns_left())
+    reply.say = strip_tone_tags(reply.say)
     if reply.error:
         session.log("system", f"Agent couldn't reply: {reply.error}")
-    session.log("agent", reply.say)
+    session.log("agent", reply.say if settings.show_transcripts else "agent reply generated")
 
     if reply.booking:
         record_booking(session, reply.booking)
